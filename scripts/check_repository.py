@@ -53,7 +53,8 @@ def main():
         findings.extend(scan(label,text))
     if args.history:
         objects=git('rev-list','--objects','--all')
-        if objects.returncode:raise SystemExit('Git history is unavailable')
+        if objects.returncode:
+            raise SystemExit('Git history is unavailable: '+objects.stderr.decode(errors='replace').strip())
         for row in objects.stdout.decode().splitlines():
             oid,_,name=row.partition(' ')
             kind=git('cat-file','-t',oid).stdout.strip()
