@@ -1,0 +1,38 @@
+# Python / editor / operating system
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+._*
+.idea/
+.vscode/
+
+# Builds and local deployment files
+/dist/
+/rendered*/
+/preview*/
+site.json
+*-site.json
+config.json
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Never version runtime evidence, backups, or machine audits
+*.log
+*.sqlite*
+*.db
+*.db-*
+*.tar.gz
+*.zip
+audit-*
+*validation-result*.json
+*install-state*.json
+/backups/
+/exports/
+/incidents/
+/syslog/
+/state/

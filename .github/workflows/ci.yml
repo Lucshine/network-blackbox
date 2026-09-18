@@ -1,0 +1,45 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  debian:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        debian: ["12", "13"]
+    container: debian:${{ matrix.debian }}-slim
+    steps:
+      - name: Install validation tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            python3 git ca-certificates rsyslog logrotate systemd
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Unit tests
+        run: |
+          python3 tests/test_agent.py
+          python3 -m unittest discover -s tests -p 'test_portable.py' -v
+          sh -n install.sh
+          sh -n uninstall.sh
+      - name: Repository privacy check
+        run: python3 scripts/check_repository.py --history
+      - name: Validate generated service configuration
+        run: |
+          python3 manage.py render --config config.example.json --output /tmp/netblackbox-rendered
+          mkdir -p /srv/netblackbox/state/rsyslog /srv/netblackbox/syslog
+          rsyslogd -N1 -f /tmp/netblackbox-rendered/etc/netblackbox/rsyslog.conf
+          logrotate -d --state /tmp/netblackbox-logrotate.state /tmp/netblackbox-rendered/etc/netblackbox/logrotate.conf
+          systemd-analyze verify /tmp/netblackbox-rendered/etc/systemd/system/*.service /tmp/netblackbox-rendered/etc/systemd/system/*.timer
+      - name: Build release archive
+        run: python3 scripts/build_release.py

@@ -1,0 +1,37 @@
+[Unit]
+Description=Network Blackbox local network evidence collector
+After=network.target systemd-journald.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/python3 /opt/netblackbox/netblackbox.py daemon
+Restart=always
+RestartSec=5
+WatchdogSec=90
+TimeoutStopSec=60
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/netblackbox
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CPUQuota=30%
+MemoryMax=256M
+TasksMax=96
+Nice=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=netblackbox
+
+[Install]
+WantedBy=multi-user.target

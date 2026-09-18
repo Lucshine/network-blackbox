@@ -1,0 +1,79 @@
+{
+  "site": "customer-site",
+  "data_dir": "/srv/netblackbox",
+  "probe_interval_seconds": 10,
+  "host_interval_seconds": 30,
+  "gateway": "192.0.2.1",
+  "public_ips": [
+    "223.5.5.5",
+    "1.1.1.1"
+  ],
+  "router_dns": "192.0.2.1",
+  "public_dns": [
+    "223.5.5.5"
+  ],
+  "dns_name": "www.baidu.com",
+  "https_urls": [
+    "https://www.baidu.com/",
+    "https://www.mi.com/"
+  ],
+  "timeouts": {
+    "ping": 2,
+    "dns": 2,
+    "https": 4,
+    "snapshot_command": 8
+  },
+  "incident": {
+    "failure_threshold": 3,
+    "recovery_threshold": 3,
+    "snapshot_offsets_seconds": [
+      0,
+      15,
+      60
+    ],
+    "nic_error_delta": 1,
+    "nic_drop_delta": 100,
+    "nic_anomaly_hold_seconds": 60
+  },
+  "retention": {
+    "metrics_days": 7,
+    "events_days": 90,
+    "incident_days": 90,
+    "syslog_days": 30,
+    "maintenance_seconds": 300,
+    "min_free_mb": 1024,
+    "snapshot_budget_mb": 1024,
+    "snapshot_command_max_bytes": 262144,
+    "syslog_maxsize_mb": 16,
+    "syslog_rotate": 30,
+    "journal_max_use_mb": 256,
+    "journal_days": 30
+  },
+  "api": {
+    "host": "127.0.0.1",
+    "port": 9911
+  },
+  "cloud": {
+    "enabled": false,
+    "push_url": "",
+    "interval_seconds": 60,
+    "mode": "json",
+    "timeout_seconds": 4
+  },
+  "pve": {
+    "enabled": false,
+    "host": "",
+    "port": 8006,
+    "api_health_enabled": false
+  },
+  "syslog": {
+    "listen_address": "192.0.2.10",
+    "port": 5514,
+    "allowed_networks": [
+      "192.0.2.0/24"
+    ]
+  },
+  "journald": {
+    "configure_persistent": true
+  }
+}
