@@ -60,4 +60,8 @@ def verify(config_path,network=False):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--config',default='/etc/netblackbox/config.json');p.add_argument('--network',action='store_true');a=p.parse_args()
-    raise SystemExit(verify(a.config,a.network))
+    try:result=verify(a.config,a.network)
+    except Exception as e:
+        print(json.dumps({'level':1,'result':'FAIL','error':str(e),'level_2':'NOT_TESTED','level_3':'NOT_TESTED'},indent=2))
+        result=1
+    raise SystemExit(result)

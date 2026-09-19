@@ -8,7 +8,7 @@
 
 只管理 canonical IPv4 来源目录中的受支持名称：`YYYY-MM-DD.log`、`YYYY-MM-DD.log-YYYYMMDD[-HHMMSS][.gz]` 和旧数字后缀 `.log.N[.gz]`。保留日期始终取文件名最前面的接收日期，不用 mtime，也不用发送设备自报时间。为兼容不同本地时区的旧文件，删除阈值多留一天；保留边界内的数据即使一天切分 80 份也不会提前删除。
 
-活跃 `.log` 永不由清理程序 unlink/compress。旧的 `.log` 先由 logrotate rename，HUP 令 rsyslog 重新开文件。Python 只压缩/删除归档，先检查 `/proc/*/fd`，已打开文件一律跳过；无法完整检查时保守跳过删除/压缩。归档名称不再被 receiver 的 dynafile 模板打开。压缩时分块、有时间预算、先 fsync 临时 gzip，再以不覆盖方式发布，最后移除原文件；已经存在的 `.gz` 不覆盖。当天和前一天归档暂不压缩，以方便当前诊断。
+活跃 `.log` 永不由清理程序 unlink/compress。旧的 `.log` 先由 logrotate rename，HUP 令 rsyslog 重新开文件。Python 只压缩/删除归档，先检查 `/proc/*/fd`，已打开文件一律跳过；无法完整检查时保守跳过删除/压缩。归档名称不再被 receiver 的 dynafile 模板打开。压缩时分块、有时间预算、先 fsync 临时 gzip，再以不覆盖方式发布，最后移除原文件；已经存在的 `.gz` 不覆盖；中断压缩留下的专属临时文件，只有确认原文件或已发布 gzip 仍在且文件未打开时才清理。当天和前一天归档暂不压缩，以方便当前诊断。
 
 符号链接、硬链接、非 IPv4 目录和不符合命名的文件不清理。升级不重命名、不迁移历史证据，也不清空 SQLite。logrotate 执行前将 glob 转为经过上述校验的文件清单，避免顺带轮转其他文件。
 

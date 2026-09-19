@@ -22,7 +22,7 @@ ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'app'));sys.path.insert(0,str(ROOT/'scripts'))
 from config_tools import render
 from syslog_storage import storage_lock,prune_archives,open_inodes
-from syslog_status import SyslogObserver,stats_snapshot,process_identity,write_errors
+from syslog_status import SyslogObserver,stats_snapshot,process_identity,write_errors,listener_state
 from verify_remote_syslog import new_id,send,check
 from benchmark_syslog import benchmark
 BASE=json.loads((ROOT/'config.example.json').read_text())
@@ -86,6 +86,8 @@ class ReceiverIntegration(unittest.TestCase):
         time.sleep(0.1)
     def test_udp_tcp_source_acl_and_quiet_source(self):
         self.emit('udp');self.emit('tcp')
+        actual_ss=subprocess.run(['ss','-H','-lnptu'],capture_output=True,text=True,timeout=5).stdout
+        self.assertEqual(listener_state(self.c,self.proc.pid,actual_ss),(True,True))
         marker=new_id()
         with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:
             s.bind(('127.0.0.2',0));s.sendto(f'<14>blocked {marker} seq=0'.encode(),('127.0.0.1',self.port))
@@ -105,6 +107,8 @@ class ReceiverIntegration(unittest.TestCase):
         self.proc.terminate();self.proc.wait(timeout=10)
         state=observer.sample(dict(receiver,service_active=False,udp_listening=False,tcp_listening=False))
         self.assertEqual(state['receiver']['state'],'RECEIVER_ERROR')
+        actual_ss=subprocess.run(['ss','-H','-lnptu'],capture_output=True,text=True,timeout=5).stdout
+        self.assertEqual(listener_state(self.c,self.proc.pid,actual_ss),(False,False))
     def test_real_source_statistics_and_write_failure(self):
         # Real-device-shaped log, without acceptance marker, to exercise dynstats output.
         with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:s.sendto(b'<14>Sep 19 00:00:00 fixture test: real-device-shaped-message',('127.0.0.1',self.port))

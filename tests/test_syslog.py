@@ -91,6 +91,12 @@ class RetentionTests(unittest.TestCase):
     def test_budget_pressure_is_independent_of_free_space(self):
         d=storage.pressure_decision(self.c,self.c['retention']['syslog_budget_mb']*1024**2,10*1024**3)
         self.assertEqual(d['action'],'pause')
+    def test_interrupted_compression_temp_removed_without_losing_original(self):
+        original=self.file('2026-08-20.log-20260820-120000')
+        temp=original.with_name(original.name+'.compress-'+('a'*32)+'.tmp');temp.write_bytes(b'partial gzip')
+        with storage.storage_lock(self.root):r=storage.prune_archives(self.c,NOW,opened=set(),compress=False)
+        self.assertFalse(temp.exists());self.assertEqual(original.read_bytes(),b'evidence\n')
+        self.assertEqual(r['compression_temps_removed'],1)
     def test_safe_compression_preserves_content(self):
         p=self.file('2026-08-20.log-20260820-120000')
         with storage.storage_lock(self.root):r=storage.prune_archives(self.c,NOW,opened=set())

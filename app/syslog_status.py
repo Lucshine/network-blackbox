@@ -57,6 +57,19 @@ def write_errors(text):
     return result[-10:]
 
 
+def listener_state(c,pid,text,available=True):
+    udp=tcp=None
+    if available:
+        endpoint=f"{c['syslog']['listen_address']}:{c['syslog']['port']}"
+        udp=tcp=False
+        for line in text.splitlines():
+            parts=line.split()
+            if len(parts)>4 and parts[4]==endpoint and f'pid={pid},' in line:
+                if parts[0]=='udp':udp=True
+                if parts[0]=='tcp':tcp=True
+    return udp,tcp
+
+
 def system_state(c,command):
     r=command(['systemctl','show','netblackbox-syslog.service','--property=ActiveState,MainPID'],3,8192)
     props=dict(line.split('=',1) for line in r['stdout'].splitlines() if '=' in line)
@@ -64,15 +77,7 @@ def system_state(c,command):
     pid=int(props.get('MainPID','0') or '0')
     ident,started=process_identity(pid)
     ss=command(['ss','-H','-lnptu'],3,65536)
-    udp=tcp=None
-    if ss['returncode']==0:
-        endpoint=f"{c['syslog']['listen_address']}:{c['syslog']['port']}"
-        udp=tcp=False
-        for line in ss['stdout'].splitlines():
-            parts=line.split()
-            if len(parts)>4 and parts[4]==endpoint and f'pid={pid},' in line:
-                if parts[0]=='udp':udp=True
-                if parts[0]=='tcp':tcp=True
+    udp,tcp=listener_state(c,pid,ss['stdout'],ss['returncode']==0)
     journal=command(['journalctl','-u','netblackbox-syslog.service',f'_PID={pid}','--since','2 minutes ago','-n','100','--no-pager','-o','json'],3,65536)
     errors=write_errors(journal['stdout']) if journal['returncode']==0 else None
     return {'write_error_messages':errors,'service_active':active,'process_id':pid,'process_identity':ident,

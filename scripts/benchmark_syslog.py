@@ -32,7 +32,7 @@ def benchmark(config,environment_id,count=1000,length=256,protocol='udp',settle=
     elapsed=time.monotonic()-start
     return {'environment_id':environment_id,'isolated':True,'receiver_pid':pid,
             'protocol':protocol,'write_mode':c['syslog'].get('write_mode'),'message_count':count,'requested_message_bytes':length,
-            'send_completed':sent['send_completed'],'send_messages_per_second':round(count/sent['send_duration_seconds'],2),
+            'wire_bytes':sent['wire_bytes'],'send_completed':sent['send_completed'],'send_messages_per_second':round(count/sent['send_duration_seconds'],2),
             'receiver_ingress_count':None,'receiver_ingress_count_status':'NOT_AVAILABLE: no per-test ingress acknowledgement',
             'file_observed_unique':result['file_observed_unique'],'duplicate_count':result['duplicate_count'],
             'file_observation_messages_per_second':round(result['file_observed_unique']/elapsed,2),

@@ -1,7 +1,7 @@
 """Exclusive syslog rotation/retention and conservative disk-pressure control.
 Only canonical IPv4 source directories and known rsyslog/logrotate names are owned.
 Unrotated .log files are NEVER unlinked/compressed. Closed archives cannot be
-reopened by the configured dynafile template. Rotation and observation use one lock.
+reopened by the configured dynafile template. Rotation and acceptance readers use one lock.
 """
 import contextlib
 import datetime as dt
@@ -105,6 +105,21 @@ def unchanged(item):
     except FileNotFoundError: return False
 
 
+def clean_compression_temps(root,opened,deadline):
+    cleaned=0
+    for directory in source_dirs(root,deadline):
+        for p in directory.iterdir():
+            if time.monotonic()>deadline:return cleaned
+            match=re.fullmatch(r'(.+)\.compress-[a-f0-9]{32}\.tmp',p.name)
+            if not match or not NAME.fullmatch(match[1]):continue
+            original=directory/match[1];final=directory/(match[1]+'.gz')
+            if not (original.is_file() and not original.is_symlink() or final.is_file() and not final.is_symlink()):continue
+            info=p.lstat()
+            if not stat.S_ISREG(info.st_mode) or (info.st_dev,info.st_ino) in opened:continue
+            p.unlink();cleaned+=1
+    return cleaned
+
+
 def prune_archives(c, now=None, opened=None, compress=True, max_seconds=10):
     """Caller MUST hold storage_lock. No mtime-based date decisions, no recent eviction."""
     now = time.time() if now is None else now
@@ -114,6 +129,7 @@ def prune_archives(c, now=None, opened=None, compress=True, max_seconds=10):
     result={'deleted_files':0,'deleted_bytes':0,'compressed_files':0,'open_file_scan_complete':opened is not None}
     if opened is None: return result
     deadline=time.monotonic()+max_seconds
+    result['compression_temps_removed']=clean_compression_temps(c['data_dir'],opened,deadline)
     for item in managed_files(c['data_dir']):
         if time.monotonic()>deadline: result['deferred']=True; break
         p=item['path']

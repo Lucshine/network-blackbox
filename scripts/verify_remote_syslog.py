@@ -23,7 +23,7 @@ def new_id():return 'NETBLACKBOX_TEST_'+uuid.uuid4().hex
 def send(target,port,protocol,marker,count=1,length=128,delay=0):
     if not MARKER.fullmatch(marker):raise ValueError('Invalid test ID')
     sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM if protocol=='udp' else socket.SOCK_STREAM)
-    sock.settimeout(5);successful=0;start=time.monotonic()
+    sock.settimeout(5);successful=0;wire_bytes=0;start=time.monotonic()
     try:
         sock.connect((target,port));source=sock.getsockname()[0]
         for seq in range(count):
@@ -32,11 +32,12 @@ def send(target,port,protocol,marker,count=1,length=128,delay=0):
             data=(text+'x'*max(0,length-len(text))).encode()
             if protocol=='tcp':sock.sendall(data+b'\n')
             else:sock.send(data)
+            wire_bytes+=len(data)+(1 if protocol=='tcp' else 0)
             successful+=1
             if delay:time.sleep(delay)
     finally:sock.close()
     return {'id':marker,'protocol':protocol,'target':target,'port':port,'source_ip':source,
-            'attempted':count,'send_completed':successful,'send_duration_seconds':time.monotonic()-start,
+            'attempted':count,'wire_bytes':wire_bytes,'send_completed':successful,'send_duration_seconds':time.monotonic()-start,
             'receiver_result':'NOT_TESTED','sent_at':dt.datetime.now(dt.timezone.utc).isoformat(),
             'note':'Socket send success does not prove receipt, file output, or durable storage.'}
 
