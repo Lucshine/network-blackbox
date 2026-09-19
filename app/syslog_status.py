@@ -92,8 +92,8 @@ class SyslogObserver:
         increments=any(type(action.get(k)) is int and action[k]>old_action.get(k,0) for k in ('failed','suspended'))
         write_error=self.state.get('write_error',False) if epoch==prior_epoch else False
         if increments:write_error=True
-        # Successful real writes clear a prior error; total 'processed' alone can include failures.
-        if not increments and observed and any(n>self.state['sources'].get(ip,{}).get('counter',0) for ip,n in observed.items()):
+        # Only an explicit rsyslog resume clears a latched write error. 'processed' is not a durability acknowledgement.
+        if not increments and action.get('resumed',0)>old_action.get('resumed',0):
             write_error=False
         paths_ok=(self.root/'syslog').is_dir() and not (self.root/'syslog').is_symlink()
         for ip in set(self.c['syslog']['expected_sources'])|set(observed):
@@ -113,7 +113,8 @@ class SyslogObserver:
                 # Upper-bound observation timestamp, explicitly NOT exact packet arrival time.
                 last=dt.datetime.fromtimestamp(now,dt.timezone.utc).isoformat()
                 precision='impstats observation time; up to polling interval after arrival'
-            source_states[ip]={'counter':count,'last_received_at':last,'timestamp_precision':precision}
+            source_states[ip]={'counter':count if count is not None else prior.get('counter'),
+                               'last_received_at':last,'timestamp_precision':precision}
             recent=last and now-dt.datetime.fromisoformat(last).timestamp()<=self.c['syslog']['silent_seconds']
             state='RECEIVER_ERROR' if error else 'RECEIVING' if recent else 'SILENT' if last else 'UNKNOWN'
             sources.append({'ip':ip,'expected':ip in self.c['syslog']['expected_sources'],'last_received_at':last,

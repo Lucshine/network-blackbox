@@ -76,7 +76,7 @@ class ReceiverIntegration(unittest.TestCase):
         wait_for(lambda:check(self.root,'127.0.0.1',marker,level=1)['result']=='PASS')
         return marker
     def rotate(self,force=True):
-        text=self.files['/etc/netblackbox/logrotate.conf'][0].replace('/usr/bin/systemctl kill -s HUP --kill-who=main netblackbox-syslog.service',f'/bin/kill -HUP {self.proc.pid}')
+        text=self.files['/etc/netblackbox/logrotate.conf'][0].replace('/usr/bin/systemctl kill -s HUP --kill-who=main netblackbox-syslog.service',f'kill -HUP {self.proc.pid}')
         p=self.root/'logrotate.conf';p.write_text(text)
         with storage_lock(self.root):
             r=subprocess.run(['logrotate',*(['-f'] if force else []),'--state',str(self.root/'state/logrotate.status'),str(p)],capture_output=True,text=True,timeout=10)

@@ -438,6 +438,10 @@ class Engine:
         try:
             observed=self.syslog_observer.sample(system_state(self.c,command),now)
             with self.lock:self.syslog_status=observed
+            guard_pressure=bool(observed['storage'].get('pressure'))
+            if guard_pressure!=self.get('syslog_storage_pressure',False):
+                self.event('STORAGE_PRESSURE' if guard_pressure else 'STORAGE_RECOVER',{'component':'syslog','storage':observed['storage']})
+                self.set('syslog_storage_pressure',guard_pressure)
             previous=self.get('syslog_receiver_state',None)
             current=observed['receiver']['state']
             if current!=previous:
@@ -461,12 +465,13 @@ class Engine:
             except Exception as e:
                 self.db.execute("UPDATE snapshot_jobs SET status='failed',error=? WHERE id=?",(str(e),ident))
                 self.event('SNAPSHOT_FAILED',{'job_id':ident,'error':str(e)})
+            self.db.commit()
             del self.running[ident]
         available = 2-len(self.running)
         if available:
             rows = self.db.execute("SELECT j.id,j.label,i.path,i.summary FROM snapshot_jobs j JOIN incidents i ON i.id=j.incident_id WHERE j.status='pending' AND j.due<=? ORDER BY j.due LIMIT ?",(now,available)).fetchall()
             for ident,label,path,summary in rows:
-                if self.get('storage_pressure',False):
+                if self.get('storage_pressure',False) or shutil.disk_usage(self.root).free<self.c['retention']['min_free_mb']*1024**2:
                     self.db.execute("UPDATE snapshot_jobs SET status='skipped',error='Storage pressure; metadata and rolling probes retained' WHERE id=?",(ident,))
                     self.event('SNAPSHOT_SKIPPED',{'job_id':ident,'reason':'storage_pressure'})
                     continue

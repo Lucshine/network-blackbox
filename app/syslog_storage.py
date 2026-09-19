@@ -185,8 +185,11 @@ def cycle(c, now=None, rotate=True, control=control_receiver, free_bytes=None):
         if decision['action']=='pause':
             # Persist intent first; a crash after stop is recoverable. Service ExecCondition consults marker.
             result.update(paused_by_guard=True,pause_reason='disk reserve or syslog budget exhausted')
-            atomic(path,result)
-            control('pause')
+            try:atomic(path,result)
+            finally:
+                # Even if the disk cannot save the marker, stop the writer and log via journald.
+                print('STORAGE_PRESSURE '+json.dumps(result),flush=True)
+                control('pause')
         elif decision['action']=='resume':
             result.update(paused_by_guard=False,pause_reason=None)
             atomic(path,result)
