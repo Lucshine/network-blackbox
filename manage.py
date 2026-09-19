@@ -22,7 +22,7 @@ import uuid
 ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT/'app'))
 from config_tools import render,validate,apply_defaults
-from syslog_storage import inventory as syslog_inventory, load_guard
+from syslog_storage import inventory as syslog_inventory, load_guard, process_token
 
 STATE=Path('/etc/netblackbox/install-state.json')
 CONFIG=Path('/etc/netblackbox/config.json')
@@ -63,6 +63,13 @@ def write_json(p,data):
 
 
 def digest(b):return hashlib.sha256(b).hexdigest()
+
+
+def sync_file(path):
+    with Path(path).open('rb') as f:os.fsync(f.fileno())
+    fd=os.open(Path(path).parent,os.O_DIRECTORY)
+    try:os.fsync(fd)
+    finally:os.close(fd)
 
 
 def ensure_safe_path(p):
@@ -141,10 +148,11 @@ def package_state():
 def unit_state():
     states={}
     for unit in UNITS:
-        r=run(['systemctl','show',unit,'--property=LoadState,ActiveState,UnitFileState'])
+        r=run(['systemctl','show',unit,'--property=LoadState,ActiveState,UnitFileState'],check=False)
         fields=dict(line.split('=',1) for line in r['stdout'].splitlines() if '=' in line)
         if fields.get('LoadState') not in ('loaded','not-found') or fields.get('ActiveState') not in ('active','inactive','failed'):
             raise RuntimeError('Unit state is unknown/transitional or masked: '+unit)
+        if r['returncode'] and fields.get('LoadState')!='not-found':raise RuntimeError('Cannot inspect unit: '+unit)
         enabled=fields.get('UnitFileState','disabled') or 'disabled'
         if enabled not in ('enabled','enabled-runtime','disabled','static','indirect'):
             raise RuntimeError('Unsupported unit enable state: '+unit+': '+enabled)
@@ -187,8 +195,19 @@ def validate_installed_manifest(state,c):
     ensure_safe_path(source)
     if not source.is_file():raise RuntimeError('Previous installation manifest is missing: '+str(source))
     previous=json.loads(source.read_text())
-    if previous.get('manager')!='netblackbox-portable' or previous.get('phase')!='complete':
+    if previous.get('manager')!='netblackbox-portable' or previous.get('phase')!='complete' or previous.get('folder')!=folder:
         raise RuntimeError('Previous installation is incomplete; recover it before upgrade')
+    if not isinstance(previous.get('files'),dict) or set(previous.get('services_before',{}))!=set(UNITS):
+        raise RuntimeError('Previous rollback manifest is incomplete')
+    for unit,status in previous['services_before'].items():
+        if any(type(status.get(k)) is not bool for k in ('active','enabled')):raise RuntimeError('Invalid prior service state: '+unit)
+    for name,item in previous['files'].items():
+        if name not in ALLOWED or not isinstance(item,dict) or 'backup' not in item:raise RuntimeError('Invalid previous backup entry')
+        if item['backup']:
+            backup=Path(item['backup']);ensure_safe_path(backup)
+            if backup!=Path(folder)/'before'/Path(name).relative_to('/') or not backup.is_file():
+                raise RuntimeError('Previous rollback backup is missing: '+name)
+            if item.get('sha256') and digest(backup.read_bytes())!=item['sha256']:raise RuntimeError('Previous backup checksum mismatch: '+name)
 
 
 def capacity_check(c):
@@ -240,6 +259,11 @@ def payload(c):
     return files
 
 
+def ancestor_for(path):
+    while not path.exists():path=path.parent
+    return path
+
+
 def preflight(c,files):
     environment()
     if Path('/etc/rsyslog.d/30-netblackbox.conf').exists() or Path('/etc/systemd/system/netblackbox-firewall.service').exists():
@@ -264,6 +288,7 @@ def preflight(c,files):
     guard=load_guard(root)
     if (root/'state/syslog-storage-error.json').exists() or guard.get('paused_by_guard') or guard.get('resume_pending'):
         raise RuntimeError('Storage guard is paused/unresolved; recover storage and receiver before upgrading')
+    if os.statvfs(ancestor_for(root)).f_flag & os.ST_RDONLY:raise RuntimeError('Data filesystem is read-only')
     capacity=capacity_check(c)
     installed=package_state()
     plain={k.split(':')[0] for k in installed}
@@ -293,7 +318,7 @@ class Transaction:
         p=Path(path)
         if p.exists():
             dest=self.folder/'before'/p.relative_to('/')
-            dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(p,dest)
+            dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(p,dest);sync_file(dest)
             record={'backup':str(dest),'mode':p.stat().st_mode & 0o777,'sha256':digest(dest.read_bytes())}
         else:record={'backup':None}
         self.manifest['files'][path]=record;self.persist()
@@ -313,7 +338,7 @@ class Transaction:
             path=root/'state'/name;ensure_safe_path(path)
             if path.exists():
                 backup=self.folder/'runtime-before'/name;backup.parent.mkdir(parents=True,exist_ok=True)
-                shutil.copy2(path,backup)
+                shutil.copy2(path,backup);sync_file(backup)
                 controls[name]={'backup':str(backup),'sha256':digest(backup.read_bytes())}
             else:controls[name]={'backup':None}
         self.manifest['runtime_before']=controls;self.persist()
@@ -431,7 +456,7 @@ def _install(args):
             marker=root/'state/upgrade-in-progress.json'
             tx.manifest.update(services_changed=True,data_dir=str(root),upgrade_marker=str(marker))
             tx.phase('quiescing')
-            write_json(marker,{'manifest':str(folder/'manifest.json'),'phase':'upgrade','requires_recovery':True})
+            write_json(marker,{'manifest':str(folder/'manifest.json'),'phase':'upgrade','requires_recovery':True,'pid':os.getpid(),'process_token':process_token(os.getpid())})
             stop_units()  # timer -> guard -> receiver -> Agent; no mixed-version runtime
             tx.phase('quiesced')
             tx.capture_controls(root)
@@ -468,6 +493,7 @@ def _install(args):
         write_json(folder/'verification.json',verify)
         if verify['returncode']:raise RuntimeError('Local service verification failed: '+verify['stdout']+verify['stderr'])
         if changing:
+            write_json(folder/'capacity-after-verification.json',capacity_check(c))
             # Start timer while marker still suppresses side effects; failure is rollback-safe.
             tx.phase('starting_timer')
             run(['systemctl','start','netblackbox-logrotate.timer'],timeout=100)

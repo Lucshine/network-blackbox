@@ -67,8 +67,11 @@ class UpgradeTests(unittest.TestCase):
                 if path in targets:
                     self.assertTrue(all(not state['active'] for state in states.values()),'old programs running during replacement')
                 return real_put(tx,path,text,mode)
+            capacity_calls=0
             def capacity(config):
-                self.assertTrue(all(not s['active'] for s in states.values()))
+                nonlocal capacity_calls
+                capacity_calls+=1
+                if capacity_calls<=2:self.assertTrue(all(not s['active'] for s in states.values()))
                 if failure=='capacity':raise RuntimeError('new messages reached budget after initial check')
                 return {'free_mb':9999,'syslog_usage':{'syslog_bytes':18}}
             with contextlib.ExitStack() as stack:
@@ -117,6 +120,49 @@ class UpgradeTests(unittest.TestCase):
             with patch.object(m,'ALLOWED',{str(target)}),patch.object(m,'stop_units') as stop:
                 with self.assertRaises(RuntimeError):m.restore_manifest(manifest)
                 stop.assert_not_called()
+    def test_abrupt_process_exit_leaves_recoverable_manifest(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();data=root/'data';(data/'state').mkdir(parents=True)
+            original=data/'state/syslog-storage.json';original.write_text('{"paused_by_guard":false}')
+            program=root/'program';program.write_text('old program')
+            evidence=data/'evidence';evidence.write_text('never delete')
+            script="""
+import importlib.util,pathlib,sys,os
+spec=importlib.util.spec_from_file_location('installer',sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+root=pathlib.Path(sys.argv[2]);data=root/'data';folder=data/'state/installations/interrupted'
+folder.mkdir(parents=True)
+tx=m.Transaction(folder,{'services_before':{u:{'active':False,'enabled':False} for u in m.UNITS}})
+tx.manifest.update(data_dir=str(data),upgrade_marker=str(data/'state/upgrade-in-progress.json'))
+tx.remember(str(root/'program'));tx.capture_controls(data);tx.phase('quiesced')
+m.write_json(data/'state/upgrade-in-progress.json',{'manifest':str(folder/'manifest.json')})
+tx.put(str(root/'program'),'new program',0o600)
+m.write_json(data/'state/syslog-storage.json',{'paused_by_guard':True})
+os._exit(17)
+"""
+            result=subprocess.run([sys.executable,'-c',script,str(ROOT/'manage.py'),str(root)],timeout=10)
+            self.assertEqual(result.returncode,17);self.assertEqual(program.read_text(),'new program')
+            manifest=json.loads((data/'state/installations/interrupted/manifest.json').read_text())
+            self.assertTrue(m.load_pending_manifest(manifest))
+            with patch.object(m,'ALLOWED',{str(program)}),patch.object(m,'UNIT_DIR',root/'no-units'),patch.object(m,'stop_units'),patch.object(m,'run',return_value={'returncode':0,'stdout':'','stderr':''}):
+                self.assertEqual(m.restore_manifest(manifest),[])
+            self.assertEqual(program.read_text(),'old program');self.assertEqual(evidence.read_text(),'never delete')
+            self.assertFalse(json.loads(original.read_text())['paused_by_guard'])
+            self.assertTrue(list((data/'state/installations/interrupted/runtime-after').glob('*/syslog-storage.json')))
+            self.assertFalse((data/'state/upgrade-in-progress.json').exists())
+    def test_complete_legacy_manifest_and_missing_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();target=root/'old-program';target.write_text('old')
+            folder=root/'installations/old';folder.mkdir(parents=True)
+            previous={'manager':'netblackbox-portable','folder':str(folder),'phase':'complete','files':{str(target):{'backup':None}},
+                      'services_before':{u:{'active':False,'enabled':False} for u in m.UNITS}}
+            state={'manager':'netblackbox-portable','data_dir':BASE['data_dir'],'latest_install':str(folder),'files':{str(target):m.digest(b'old')}}
+            (folder/'manifest.json').write_text(json.dumps(previous))
+            with patch.object(m,'REQUIRED_INSTALLED',{str(target)}),patch.object(m,'ALLOWED',{str(target)}):
+                m.validate_installed_manifest(state,BASE)
+                previous['files'][str(target)]['backup']=str(folder/'before'/target.relative_to('/'))
+                (folder/'manifest.json').write_text(json.dumps(previous))
+                with self.assertRaisesRegex(RuntimeError,'backup is missing'):m.validate_installed_manifest(state,BASE)
     def test_incomplete_installed_manifest_rejected(self):
         for state in ({'manager':'netblackbox-portable','data_dir':'/srv/netblackbox','files':{}},
                       {'manager':'wrong','data_dir':'/srv/netblackbox','files':{}}):

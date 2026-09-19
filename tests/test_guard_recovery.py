@@ -52,11 +52,15 @@ class GuardRecoveryTests(unittest.TestCase):
         self.assertTrue(first['requires_manual_intervention']);self.assertEqual(self.calls,['resume'])
         self.cycle(self.now+30,running=False,control=fail);self.assertEqual(self.calls,['resume'])
         self.cycle(self.now+301,running=False,control=fail);self.assertEqual(self.calls,['resume','resume'])
+    def test_interrupted_upgrade_requires_manual_recovery(self):
+        st.atomic(self.root/'state/upgrade-in-progress.json',{'pid':999999999,'process_token':'dead','manifest':'fixture'})
+        with self.assertRaisesRegex(RuntimeError,'Interrupted upgrade'):self.cycle()
+        self.assertEqual(self.calls,[]);self.assertTrue(self.file.exists())
     def test_upgrade_guard_validation_never_deletes_or_controls(self):
         (self.root/'state').mkdir()
         st.atomic(self.root/'state/upgrade-in-progress.json',{'manifest':'fixture'})
         self.file.unlink();self.file.write_text('expired but retained during upgrade')
-        result=self.cycle()
+        with patch.object(st,'upgrade_owner_alive',return_value=True):result=self.cycle()
         self.assertTrue(result['upgrade_validation_only']);self.assertEqual(self.calls,[])
         self.assertTrue(self.file.exists());self.assertFalse((self.root/'state/syslog-storage.json').exists())
 

@@ -126,6 +126,7 @@ input(type="imudp" address="{sy['listen_address']}" port="{sy['port']}" ruleset=
 input(type="imtcp" address="{sy['listen_address']}" port="{sy['port']}" ruleset="NetBlackboxLAN" MaxSessions="32")
 '''
     agent=(Path(app_dir)/'agent.service.in').read_text().replace('ReadWritePaths=/srv/netblackbox','ReadWritePaths='+root)
+    agent=agent.replace('ExecStart=/usr/bin/python3', 'ExecCondition=/usr/bin/python3 /opt/netblackbox/syslog_storage.py --agent-allowed\nExecStart=/usr/bin/python3')
     agent=agent.replace('TimeoutStopSec=60','TimeoutStartSec=90\nTimeoutStopSec=90')
     receiver=f'''[Unit]
 Description=Network Blackbox isolated LAN syslog receiver

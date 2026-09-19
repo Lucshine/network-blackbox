@@ -183,6 +183,23 @@ def pressure_decision(c, usage, free, paused=False):
             'action':'pause' if critical and not paused else 'resume' if paused and recovered else 'none'}
 
 
+def process_token(pid):
+    try:
+        raw=Path(f'/proc/{pid}/stat').read_text()
+        start=raw[raw.rindex(')')+2:].split()[19]
+        return Path('/proc/sys/kernel/random/boot_id').read_text().strip()+':'+str(pid)+':'+start
+    except (OSError,IndexError,ValueError):return None
+
+
+def upgrade_owner_alive(root):
+    path=Path(root)/'state/upgrade-in-progress.json'
+    if not path.exists():return True
+    try:
+        marker=json.loads(path.read_text());pid=marker['pid']
+        return type(pid) is int and pid>0 and marker.get('process_token') is not None and process_token(pid)==marker['process_token']
+    except (OSError,ValueError,KeyError,TypeError):return False
+
+
 def load_guard(root):
     """A corrupt pause marker is not equivalent to an unpaused receiver."""
     path=Path(root)/'state/syslog-storage.json'
@@ -228,6 +245,7 @@ def cycle(c, now=None, rotate=True, control=control_receiver, free_bytes=None, r
     with storage_lock(root):
         # During a staged installation validate the real guard without deleting any evidence.
         if (root/'state/upgrade-in-progress.json').exists():
+            if not upgrade_owner_alive(root):raise RuntimeError('Interrupted upgrade: manual rollback required; guard will not delete evidence or resume services')
             old=load_guard(root)
             if fault.exists() or old.get('paused_by_guard') or old.get('resume_pending'):
                 raise RuntimeError('Storage guard needs recovery before upgrade')
@@ -309,9 +327,11 @@ def main():
     from config_tools import validate
     parser=argparse.ArgumentParser();parser.add_argument('--config',default='/etc/netblackbox/config.json')
     parser.add_argument('--receiver-allowed',action='store_true')
+    parser.add_argument('--agent-allowed',action='store_true')
     parser.add_argument('--clear-error',action='store_true',help='After repair: validate safe capacity, clear manual-intervention alarm; does not start receiver')
     a=parser.parse_args();c=validate(json.loads(Path(a.config).read_text()))
     root=Path(c['data_dir'])
+    if a.agent_allowed:return 0 if upgrade_owner_alive(root) else 1
     if a.clear_error:
         with storage_lock(root):
             load_guard(root);usage=assess_capacity(c)
@@ -320,6 +340,7 @@ def main():
             (root/'state/syslog-storage-error.json').unlink(missing_ok=True)
         print('Guard error cleared after validation. Receiver was not started.');return 0
     if a.receiver_allowed:
+        if not upgrade_owner_alive(root):return 1
         if (root/'state/syslog-storage-error.json').exists():return 1
         try:state=load_guard(root);assess_capacity(c)
         except (OSError,ValueError,RuntimeError):return 1
