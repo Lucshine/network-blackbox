@@ -237,7 +237,12 @@ def main():
         root=Path(c['data_dir']);state=load(root/'state/syslog-storage.json',{})
         free=shutil.disk_usage(root).free
         # Check cheap hard reserve at receiver start, even if guard has not run yet.
-        return 1 if state.get('paused_by_guard') or free<c['retention']['syslog_stop_free_mb']*1024**2 else 0
+        if state.get('paused_by_guard') or free<c['retention']['syslog_stop_free_mb']*1024**2:return 1
+        # A fresh receiver process has fresh counters. Do not mix old impstats snapshots into its scope.
+        stats=root/'state/rsyslog/stats.log'
+        if stats.is_symlink():raise ValueError('Symlink statistics file refused')
+        stats.unlink(missing_ok=True)
+        return 0
     try:print(json.dumps(cycle(c),indent=2));return 0
     except BlockingIOError:print('Maintenance deferred: syslog lock busy');return 0
 

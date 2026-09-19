@@ -51,6 +51,7 @@ python3 manage.py init \
 | 命令 | 用途 |
 |---|---|
 | `netblackbox status` | 当前网络状态和 active incident |
+| `netblackbox syslog-status` | 接收器健康、来源最近收件及 SILENT/UNKNOWN 状态 |
 | `netblackbox health` | Agent 是否正常采集 |
 | `netblackbox test` | 立即测试网关、公网 IP、DNS 和 HTTPS |
 | `netblackbox incidents` | 最近的故障事件 |
@@ -107,11 +108,21 @@ sudo ./uninstall.sh --yes
 - 保留策略不等于硬磁盘配额，应定期检查剩余空间。
 - 默认安装 journald 持久化/容量 drop-in；已有日志策略的系统可在配置中关闭此项。
 
+## v1.2 Syslog 可靠性
+
+日志按实际天数保留，不再因短时间内轮转超过 30 次而提前删除。默认 performance 写入模式保留应用缓冲刷新，durability 可选；两者都不把文件可读等同于断电保证。磁盘告急会明确暂停本项目 receiver，保留已有证据，释放空间后按阈值恢复。
+
+`netblackbox syslog-status` 或 `GET /syslog` 显示接收器自身状态及可选 `syslog.expected_sources`。**SILENT 只表示没有新日志，不是链路 DOWN。** 本机验证、跨主机验证和管理员手动设备验收分开报告 PASS/FAIL/NOT_TESTED。
+
+- [升级与回滚](docs/UPGRADE-v1.2.md)
+- [Syslog 保留、磁盘保护和写入语义](docs/SYSLOG-DESIGN.md)
+- [分层验收与隔离 benchmark](docs/SYSLOG-ACCEPTANCE.md)
+
 ## 更多文档
 
 - [配置、保留策略与 heartbeat](docs/CONFIGURATION.md)
 - [验收、防火墙、备份、回滚和卸载](docs/OPERATIONS.md)
-- [PVE 接入建议](docs/PVE.md)
+- [PVE 只读采集路线图](docs/PVE-ROADMAP.md)
 - [开发与测试](CONTRIBUTING.md)
 
 ## License

@@ -25,7 +25,7 @@ CONFIG=Path('/etc/netblackbox/config.json')
 UNITS=['netblackbox.service','netblackbox-syslog.service','netblackbox-logrotate.timer','netblackbox-logrotate.service']
 PACKAGES=['rsyslog','curl','jq','bind9-dnsutils','iproute2','iputils-ping','ethtool','conntrack','sqlite3','python3','ca-certificates','procps','util-linux','logrotate']
 APP_FILES=['netblackbox.py','config_tools.py','simulate_failure.py','syslog_storage.py','syslog_status.py']
-DOC_FILES=['LICENSE','README.md','docs/CONFIGURATION.md','docs/OPERATIONS.md','docs/PVE.md','docs/IMMORTALWRT.md','VERSION']
+DOC_FILES=['LICENSE','README.md','docs/CONFIGURATION.md','docs/OPERATIONS.md','docs/PVE.md','docs/IMMORTALWRT.md','docs/SYSLOG-DESIGN.md','docs/SYSLOG-ACCEPTANCE.md','docs/UPGRADE-v1.2.md','docs/PVE-ROADMAP.md','VERSION']
 ALLOWED={'/etc/netblackbox/config.json','/etc/netblackbox/rsyslog.conf','/etc/netblackbox/logrotate.conf',str(STATE),
          '/etc/systemd/journald.conf.d/60-netblackbox.conf','/usr/local/bin/netblackbox'} | {'/etc/systemd/system/'+u for u in UNITS} | {'/opt/netblackbox/'+f for f in APP_FILES+DOC_FILES}
 

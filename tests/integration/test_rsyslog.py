@@ -55,6 +55,8 @@ class ReceiverIntegration(unittest.TestCase):
         self.log=(self.root/'receiver-stderr.log').open('w+')
         self.proc=None;self.start()
     def start(self):
+        # Equivalent to receiver ExecCondition's telemetry reset (only in this test fixture).
+        (self.root/'state/rsyslog/stats.log').unlink(missing_ok=True)
         r=subprocess.run(['rsyslogd','-N1','-f',str(self.config)],capture_output=True,text=True,timeout=15)
         self.assertEqual(r.returncode,0,r.stderr)
         self.proc=subprocess.Popen(['rsyslogd','-n','-f',str(self.config),'-i',str(self.root/'pid')],stdout=self.log,stderr=self.log)
@@ -113,8 +115,11 @@ class ReceiverIntegration(unittest.TestCase):
         state=observer.sample(receiver);self.assertGreater(state['sources'][0]['message_count'],0,state)
         self.assertEqual(state['sources'][0]['state'],'RECEIVING',state)
         # Actual omfile filesystem error, not mocked result.
-        directory=self.root/'syslog/127.0.0.1';shutil.move(directory,self.root/'saved-evidence')
+        directory=self.root/'syslog/127.0.0.1'
+        old_inodes={(p.stat().st_dev,p.stat().st_ino) for p in directory.glob('*.log')}
+        shutil.move(directory,self.root/'saved-evidence')
         directory.write_text('not a directory');os.kill(self.proc.pid,signal.SIGHUP)
+        wait_for(lambda:not (old_inodes & (open_inodes() or old_inodes)))
         with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:s.sendto(b'<14>Sep 19 00:00:00 fixture test: fail-write',('127.0.0.1',self.port))
         wait_for(lambda:observer.sample(receiver)['receiver']['write_healthy'] is False)
         self.assertEqual(observer.sample(receiver)['receiver']['state'],'RECEIVER_ERROR')
@@ -122,7 +127,8 @@ class ReceiverIntegration(unittest.TestCase):
         def errors():
             self.log.flush()
             return write_errors((self.root/'receiver-stderr.log').read_text())
-        wait_for(errors)
+        try:wait_for(errors)
+        except AssertionError:self.fail('Actual receiver stderr: '+(self.root/'receiver-stderr.log').read_text())
         state=observer.sample(dict(receiver,write_error_messages=errors()))
         self.assertFalse(state['receiver']['write_healthy'])
         self.assertIsNone(state['receiver']['write_failure_count'])

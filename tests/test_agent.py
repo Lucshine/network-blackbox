@@ -86,6 +86,45 @@ class Tests(unittest.TestCase):
         r = nb.maintenance(self.c)
         self.assertEqual(r['deleted']['metrics'],1)
         self.assertEqual(self.e.db.execute('SELECT count(*) FROM metrics').fetchone()[0],1)
+    def test_system_boot_keeps_active_incident_and_existing_schema(self):
+        for _ in range(3):self.e.process(probe(gateway=False))
+        active=self.e.s['active']
+        before=self.e.db.execute('SELECT count(*) FROM metrics').fetchone()[0]
+        self.e.db.execute("UPDATE snapshot_jobs SET status='running' WHERE label='t000'")
+        self.e.db.commit()
+        for pool in (self.e.snapshot_pool,self.e.cloud_pool,self.e.maintenance_pool):pool.shutdown()
+        self.e.db.close()
+        original=nb.read
+        def changed_boot(path):
+            return 'test-new-boot' if path=='/proc/sys/kernel/random/boot_id' else original(path)
+        with patch.object(nb,'read',side_effect=changed_boot):self.e=nb.Engine(self.c)
+        self.assertEqual(self.e.s['active'],active)
+        self.assertEqual(self.e.db.execute('SELECT count(*) FROM metrics').fetchone()[0],before)
+        self.assertEqual(self.e.db.execute('PRAGMA user_version').fetchone()[0],0)
+        self.assertEqual(self.e.db.execute("SELECT status FROM snapshot_jobs WHERE label='t000'").fetchone()[0],'pending')
+        for _ in range(3):self.e.process(probe())
+        self.assertIsNone(self.e.s['active'])
+        self.assertEqual(self.e.db.execute('PRAGMA integrity_check').fetchone()[0],'ok')
+    def test_committed_evidence_survives_abrupt_process_exit(self):
+        import subprocess
+        dbpath=Path(self.c['data_dir'])/'db/netblackbox.sqlite3'
+        child="import sqlite3,sys,os; d=sqlite3.connect(sys.argv[1]); d.execute(\"INSERT INTO metrics(ts,boot_id,kind,data) VALUES(1,'test','probe','{}')\"); d.commit(); os._exit(0)"
+        r=subprocess.run([sys.executable,'-c',child,str(dbpath)],timeout=5)
+        self.assertEqual(r.returncode,0)
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM metrics WHERE boot_id='test'").fetchone()[0],1)
+        self.assertEqual(self.e.db.execute('PRAGMA integrity_check').fetchone()[0],'ok')
+    def test_completed_snapshot_not_reexecuted_after_unacknowledged_job(self):
+        path=Path(self.c['data_dir'])/'exports/completed';path.mkdir()
+        nb.atomic_json(path/'complete.json',{'completed_at':nb.iso()})
+        with patch.object(nb,'command',side_effect=AssertionError('must not re-run diagnostics')):
+            self.assertEqual(nb.snapshot(self.c,path,{}),str(path))
+    def test_background_maintenance_failure_does_not_escape(self):
+        import concurrent.futures
+        future=concurrent.futures.Future();future.set_exception(OSError('no space left'))
+        self.e.maintenance_future=future
+        self.e.maintenance_done()
+        self.assertIsNone(self.e.maintenance_future)
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM events WHERE type='MAINTENANCE_FAILED'").fetchone()[0],1)
     def test_cloud_payload_allowlist(self):
         seen = []
         def run(args,*a,**kw):

@@ -5,6 +5,7 @@
 ```bash
 python3 tests/test_agent.py
 python3 -m unittest discover -s tests -p 'test_portable.py' -v
+python3 -m unittest discover -s tests -p 'test_syslog.py' -v
 python3 scripts/check_repository.py
 ```
 
@@ -18,7 +19,7 @@ python3 scripts/build_release.py
 
 输出位于 dist/，包含 SHA256 校验文件。构建使用明确白名单，不打包站点配置、日志、数据库或安装审计。
 
-CI 在 Debian 12/13 容器中运行单元测试、隐私检查、发布包构建与 rsyslog/systemd 配置语法检查。容器中的语法检查不等于 systemd 实机部署验收；实际服务器上仍需运行 `verify.py --network`，并从另一台 LAN 设备发送测试日志。
+CI 在 Debian 12/13 容器中运行单元测试、真实 rsyslog/logrotate 集成测试、隔离 loopback benchmark、隐私检查、发布包构建与配置语法检查。容器中的语法检查不等于 systemd 实机部署验收；实际服务器上仍需运行 `verify.py --network`，并从另一台 LAN 设备发送测试日志。
 
 提交时请：
 

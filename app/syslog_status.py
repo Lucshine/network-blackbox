@@ -52,7 +52,7 @@ def write_errors(text):
     for line in text.splitlines():
         try:line=json.loads(line).get('MESSAGE',line)
         except (ValueError,AttributeError):pass
-        if re.search(r'(omfile.*(?:error|fail|denied|could not|cannot)|(?:error|fail).*omfile|error during.*write)',line,re.I):
+        if re.search(r'(omfile.*(?:error|fail|denied|could not|cannot)|(?:error|fail).*omfile|error during.*write|file .*?(?:open error|write error))',line,re.I):
             result.append(line[-1024:])
     return result[-10:]
 
@@ -73,7 +73,7 @@ def system_state(c,command):
             if len(parts)>4 and parts[4]==endpoint and f'pid={pid},' in line:
                 if parts[0]=='udp':udp=True
                 if parts[0]=='tcp':tcp=True
-    journal=command(['journalctl','-u','netblackbox-syslog.service','--since','2 minutes ago','-n','100','--no-pager','-o','json'],3,65536)
+    journal=command(['journalctl','-u','netblackbox-syslog.service',f'_PID={pid}','--since','2 minutes ago','-n','100','--no-pager','-o','json'],3,65536)
     errors=write_errors(journal['stdout']) if journal['returncode']==0 else None
     return {'write_error_messages':errors,'service_active':active,'process_id':pid,'process_identity':ident,
             'process_started_at':started,'udp_listening':udp,'tcp_listening':tcp}
