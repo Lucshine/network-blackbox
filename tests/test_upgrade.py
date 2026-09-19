@@ -163,6 +163,23 @@ os._exit(17)
                 previous['files'][str(target)]['backup']=str(folder/'before'/target.relative_to('/'))
                 (folder/'manifest.json').write_text(json.dumps(previous))
                 with self.assertRaisesRegex(RuntimeError,'backup is missing'):m.validate_installed_manifest(state,BASE)
+    def test_skipped_rollback_start_is_reported_as_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();unitdir=root/'units';unitdir.mkdir()
+            unit=unitdir/'netblackbox-syslog.service';unit.write_text('old receiver')
+            manifest={'folder':str(root),'files':{},'services_before':{'netblackbox-syslog.service':{'active':True,'enabled':True}}}
+            def executor(argv,**kwargs):
+                return {'returncode':0,'stdout':'inactive' if argv[:2]==['systemctl','show'] else '', 'stderr':''}
+            with patch.object(m,'UNIT_DIR',unitdir),patch.object(m,'stop_units'),patch.object(m,'run',side_effect=executor):
+                errors=m.restore_manifest(manifest)
+            self.assertTrue(any('skipped or failed' in e for e in errors))
+    def test_runtime_enable_restoration_clears_persistent_links_first(self):
+        with patch.object(m,'run',return_value={'returncode':0,'stdout':'','stderr':''}) as run:
+            m.restore_enable('netblackbox.service',{'enabled':True,'enabled_state':'enabled-runtime'})
+            self.assertEqual(run.call_args_list[0].args[0],['systemctl','disable','netblackbox.service'])
+            self.assertEqual(run.call_args_list[1].args[0],['systemctl','enable','--runtime','netblackbox.service'])
+            run.reset_mock();m.restore_enable('netblackbox-logrotate.service',{'enabled':False,'enabled_state':'static'})
+            run.assert_not_called()
     def test_incomplete_installed_manifest_rejected(self):
         for state in ({'manager':'netblackbox-portable','data_dir':'/srv/netblackbox','files':{}},
                       {'manager':'wrong','data_dir':'/srv/netblackbox','files':{}}):

@@ -44,7 +44,7 @@ Agent 和系统重启后从 SQLite 续接 active incident/待执行任务；错�
 
 低于 1 GiB 空闲或 incident 超过 1 GiB 时，保留状态/指标和 incident 元数据，跳过后续大快照并记录 STORAGE_PRESSURE。不会提前删掉 90 天内 incident。压力状态分为 disk、incident、syslog 三域；Syslog 自身容量预警不抑制 Incident 快照。syslog_budget_mb 默认 1024；剩余低于 syslog_stop_free_mb（默认 256）或达到 syslog 预算时，会暂停专用 receiver 并保留已有日志。高流量日志、频繁故障、其他软件和手工导出仍可能在采样间隔内填满共享盘，容量阈值不是硬配额。详见 SYSLOG-DESIGN.md。exports/审计/安装备份不自动清理，管理员负责归档。
 
-程序时间为 UTC；syslog 接收日期按 rsyslog/系统时区格式化，不修改目标系统时区。定期清理允许日边界误差；排查时注意时区换算。
+内部事件时间为 UTC；syslog 文件名、查找、压缩和清理边界使用服务器本地接收日期，不修改系统时区。正文 timegenerated 带 RFC3339 偏移；额外一天保留余量不变。receiver、Agent 和 guard 必须使用同一个系统时区。
 
 ## Cloud / Kuma
 

@@ -44,6 +44,10 @@ class GuardRecoveryTests(unittest.TestCase):
     def test_malformed_flags_fail_closed(self):
         p=self.root/'state/syslog-storage.json';p.parent.mkdir();p.write_text('{"paused_by_guard":"false"}')
         with self.assertRaises(ValueError):st.load_guard(self.root)
+        p.write_text('{}')
+        with self.assertRaises(ValueError):st.load_guard(self.root)
+        p.write_text('{"paused_by_guard":true,"last_rotation":NaN}')
+        with self.assertRaises(ValueError):st.load_guard(self.root)
     def test_resume_failure_backoff(self):
         st.atomic(self.root/'state/syslog-storage.json',{'paused_by_guard':True,'pause_confirmed':True})
         self.file.unlink()

@@ -172,9 +172,9 @@ def stop_units():
 def restore_enable(unit,prior):
     if unit not in INSTALLABLE:return  # static oneshot has no enable/disable semantics
     enabled=prior.get('enabled_state','enabled' if prior['enabled'] else 'disabled')
+    run(['systemctl','disable',unit])  # remove links created by the failed candidate, including persistent ones
     if enabled=='enabled-runtime':run(['systemctl','enable','--runtime',unit])
     elif enabled=='enabled':run(['systemctl','enable',unit])
-    else:run(['systemctl','disable',unit])
 
 
 def validate_installed_manifest(state,c):
@@ -393,7 +393,11 @@ def restore_manifest(manifest):
         if (UNIT_DIR/unit).exists():
             try:
                 restore_enable(unit,prior)
-                if prior['active']:run(['systemctl','start',unit],timeout=100)
+                if prior['active']:
+                    run(['systemctl','start',unit],timeout=100)
+                    if unit in INSTALLABLE:
+                        actual=run(['systemctl','show',unit,'--property=ActiveState','--value'])['stdout'].strip()
+                        if actual!='active':raise RuntimeError('Rollback start was skipped or failed: '+unit)
             except RuntimeError as e:errors.append(str(e))
         else:
             for target in ('multi-user.target.wants','timers.target.wants'):
@@ -402,6 +406,8 @@ def restore_manifest(manifest):
     if '/etc/systemd/journald.conf.d/60-netblackbox.conf' in manifest['files']:
         r=run(['systemctl','restart','systemd-journald'],timeout=30,check=False)
         if r['returncode']:errors.append('journald restore: '+r['stderr'])
+    if errors and control:
+        write_json(Path(control),{'manifest':str(Path(manifest['folder'])/'manifest.json'),'requires_recovery':True})
     return errors
 
 

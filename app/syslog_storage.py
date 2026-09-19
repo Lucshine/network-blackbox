@@ -9,6 +9,7 @@ import fcntl
 import gzip
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -206,11 +207,11 @@ def load_guard(root):
     if not path.exists():return {}
     if path.is_symlink():raise ValueError('Symlink guard marker refused')
     data=json.loads(path.read_text())
-    if not isinstance(data,dict):raise ValueError('Guard marker must be an object')
+    if not isinstance(data,dict) or 'paused_by_guard' not in data:raise ValueError('Guard marker must include explicit pause ownership')
     for key in ('paused_by_guard','pause_confirmed','resume_pending'):
         if key in data and type(data[key]) is not bool:raise ValueError('Invalid guard flag: '+key)
     for key in ('last_rotation','resume_retry_after'):
-        if key in data and (type(data[key]) not in (float,int) or data[key]<0):raise ValueError('Invalid guard time: '+key)
+        if key in data and (type(data[key]) not in (float,int) or not math.isfinite(data[key]) or data[key]<0):raise ValueError('Invalid guard time: '+key)
     return data
 
 
