@@ -46,6 +46,17 @@ def process_identity(pid):
     except (OSError,ValueError,IndexError):return None,None
 
 
+def write_errors(text):
+    """omfile dynafile errors do not always increment generic action.failed."""
+    result=[]
+    for line in text.splitlines():
+        try:line=json.loads(line).get('MESSAGE',line)
+        except (ValueError,AttributeError):pass
+        if re.search(r'(omfile.*(?:error|fail|denied|could not|cannot)|(?:error|fail).*omfile|error during.*write)',line,re.I):
+            result.append(line[-1024:])
+    return result[-10:]
+
+
 def system_state(c,command):
     r=command(['systemctl','show','netblackbox-syslog.service','--property=ActiveState,MainPID'],3,8192)
     props=dict(line.split('=',1) for line in r['stdout'].splitlines() if '=' in line)
@@ -62,8 +73,28 @@ def system_state(c,command):
             if len(parts)>4 and parts[4]==endpoint and f'pid={pid},' in line:
                 if parts[0]=='udp':udp=True
                 if parts[0]=='tcp':tcp=True
-    return {'service_active':active,'process_id':pid,'process_identity':ident,
+    journal=command(['journalctl','-u','netblackbox-syslog.service','--since','2 minutes ago','-n','100','--no-pager','-o','json'],3,65536)
+    errors=write_errors(journal['stdout']) if journal['returncode']==0 else None
+    return {'write_error_messages':errors,'service_active':active,'process_id':pid,'process_identity':ident,
             'process_started_at':started,'udp_listening':udp,'tcp_listening':tcp}
+
+
+def recent_file_time(root,ip,now):
+    """Bounded lookup of receive timestamps, only on counter changes; never scan archives."""
+    latest=None
+    today=dt.datetime.fromtimestamp(now,dt.timezone.utc).date()
+    for offset in (0,1):
+        path=Path(root)/'syslog'/ip/f'{today-dt.timedelta(days=offset)}.log'
+        if path.is_symlink() or path.parent.is_symlink():continue
+        for line in tail(path,65536).splitlines():
+            if 'NETBLACKBOX_TEST_' in line or 'NETBLACKBOX_VERIFY_' in line:continue
+            if f' source={ip} ' not in line:continue
+            try:
+                stamp=dt.datetime.fromisoformat(line.split()[0])
+                if stamp.tzinfo is None:continue
+                if stamp.timestamp()<=now+5 and (latest is None or stamp.timestamp()>latest.timestamp()):latest=stamp
+            except (ValueError,IndexError):continue
+    return latest.isoformat() if latest else None
 
 
 class SyslogObserver:
@@ -99,7 +130,7 @@ class SyslogObserver:
         for ip in set(self.c['syslog']['expected_sources'])|set(observed):
             p=self.root/'syslog'/ip
             if p.exists() and (not p.is_dir() or p.is_symlink()):paths_ok=False
-        write_healthy=False if not paths_ok or write_error else True if action and receiver.get('service_active') else None
+        write_healthy=False if not paths_ok or write_error or receiver.get('write_error_messages') else True if action and receiver.get('service_active') else None
         error=any(receiver.get(k) is False for k in ('service_active','udp_listening','tcp_listening')) or write_healthy is False
         source_states=self.state['sources']
         ips=sorted(set(self.c['syslog']['expected_sources'])|set(observed)|set(source_states))[:512]
@@ -110,9 +141,15 @@ class SyslogObserver:
             changed=count is not None and count>0 and (epoch!=prior_epoch or count!=prior.get('counter'))
             last=prior.get('last_received_at');precision=prior.get('timestamp_precision','unknown')
             if changed:
-                # Upper-bound observation timestamp, explicitly NOT exact packet arrival time.
-                last=dt.datetime.fromtimestamp(now,dt.timezone.utc).isoformat()
-                precision='impstats observation time; up to polling interval after arrival'
+                file_time=recent_file_time(self.root,ip,now)
+                if file_time:
+                    last=file_time
+                    precision='rsyslog receive timestamp from bounded current/previous-day log tail'
+                elif epoch==prior_epoch and prior.get('counter') is not None:
+                    last=dt.datetime.fromtimestamp(now,dt.timezone.utc).isoformat()
+                    precision='counter-change observation upper bound; arrival since previous available sample'
+                # First observation/restart cannot make an old counter imply recent traffic.
+
             source_states[ip]={'counter':count if count is not None else prior.get('counter'),
                                'last_received_at':last,'timestamp_precision':precision}
             recent=last and now-dt.datetime.fromisoformat(last).timestamp()<=self.c['syslog']['silent_seconds']
@@ -122,8 +159,8 @@ class SyslogObserver:
                             'timestamp_precision':precision,'state':state})
         self.state={'version':1,'process_identity':epoch,'sources':{ip:source_states[ip] for ip in ips},'action':action,'write_error':write_error}
         storage=load(self.root/'state/syslog-storage.json',{})
-        result={'receiver':{**receiver,'write_healthy':write_healthy,'write_failure_count':failed,
-                            'write_failure_scope':'impstats action failed since receiver start; not lost-message count',
+        result={'receiver':{**receiver,'write_healthy':write_healthy,'write_failure_count':None,'action_failure_count':failed,
+                            'write_failure_scope':'exact per-file write failures unavailable; action_failure_count is an incomplete action counter since receiver start',
                             'suspension_count':suspended,'stats_available':bool(stats),
                             'state':'RECEIVER_ERROR' if error else 'HEALTHY' if write_healthy else 'UNKNOWN',
                             'address':self.c['syslog']['listen_address'],'port':self.c['syslog']['port']},

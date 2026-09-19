@@ -102,10 +102,21 @@ class ObserverTests(unittest.TestCase):
         r=self.observer.sample(dict(self.receiver,service_active=False),NOW,{});self.assertEqual(r['receiver']['state'],'RECEIVER_ERROR')
         r=self.observer.sample(self.receiver,NOW,self.stats(1,1));self.assertFalse(r['receiver']['write_healthy'])
     def test_restart_retains_last_seen_and_resets_counter_scope(self):
+        self.observer.sample(self.receiver,NOW-1,self.stats(0))
         self.observer.sample(self.receiver,NOW,self.stats(99))
         other=SyslogObserver(self.c)
         r=other.sample(dict(self.receiver,process_identity='boot:2:345'),NOW+400,self.stats(0))
         self.assertEqual(r['sources'][0]['state'],'SILENT');self.assertEqual(r['sources'][0]['message_count'],0)
+    def test_existing_counter_without_recent_evidence_is_not_receiving(self):
+        r=self.observer.sample(self.receiver,NOW,self.stats(99))
+        self.assertEqual(r['sources'][0]['state'],'UNKNOWN')
+    def test_missing_stats_does_not_refresh_last_seen(self):
+        self.observer.sample(self.receiver,NOW,self.stats(0))
+        original=self.observer.sample(self.receiver,NOW+1,self.stats(1))['sources'][0]['last_received_at']
+        self.observer.sample(self.receiver,NOW+2,{})
+        r=self.observer.sample(self.receiver,NOW+500,self.stats(1))
+        self.assertEqual(r['sources'][0]['last_received_at'],original)
+        self.assertEqual(r['sources'][0]['state'],'SILENT')
     def test_missing_stats_count_unknown(self):
         r=self.observer.sample(self.receiver,NOW,{})
         self.assertIsNone(r['sources'][0]['message_count']);self.assertIsNone(r['receiver']['write_failure_count'])

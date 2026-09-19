@@ -180,25 +180,43 @@ def cycle(c, now=None, rotate=True, control=control_receiver, free_bytes=None):
         free=shutil.disk_usage(root).free if free_bytes is None else free_bytes
         paused=bool(old.get('paused_by_guard'))
         decision=pressure_decision(c,summary['syslog_bytes'],free,paused)
+        if paused and not old.get('pause_confirmed',True) and decision['action']!='resume':decision['action']='pause'
         result={**summary,**decision,'checked_at':now,'free_bytes':free,'paused_by_guard':paused,
-                'last_rotation':old.get('last_rotation',0),'pause_reason':old.get('pause_reason')}
+                'last_rotation':old.get('last_rotation',0),'pause_reason':old.get('pause_reason'),
+                'pause_confirmed':old.get('pause_confirmed',False)}
         if decision['action']=='pause':
             # Persist intent first; a crash after stop is recoverable. Service ExecCondition consults marker.
-            result.update(paused_by_guard=True,pause_reason='disk reserve or syslog budget exhausted')
+            result.update(paused_by_guard=True,pause_confirmed=False,pause_reason='disk reserve or syslog budget exhausted')
             try:atomic(path,result)
             finally:
                 # Even if the disk cannot save the marker, stop the writer and log via journald.
                 print('STORAGE_PRESSURE '+json.dumps(result),flush=True)
                 control('pause')
+                result['pause_confirmed']=True
         elif decision['action']=='resume':
-            result.update(paused_by_guard=False,pause_reason=None)
+            result.update(paused_by_guard=False,pause_confirmed=False,pause_reason=None)
             atomic(path,result)
             try:control('resume')
             except Exception:
                 result['paused_by_guard']=True;atomic(path,result);raise
         if rotate and now-result['last_rotation']>=300:
-            argv=['logrotate','--state',str(root/'state/logrotate.status'),'/etc/netblackbox/logrotate.conf']
-            r=subprocess.run(argv,capture_output=True,text=True,timeout=20)
+            # Materialize only owned canonical files. Never hand arbitrary source filenames to logrotate.
+            template=Path('/etc/netblackbox/logrotate.conf').read_text()
+            pattern=str(root)+'/syslog/*/*.log'
+            if pattern not in template:raise ValueError('Unrecognized logrotate template; refusing rotation')
+            owned=['"'+str(item['path'])+'"' for item in managed_files(root) if not item['archive']]
+            if owned:
+                template=template.replace(pattern,' '.join(owned),1)
+            else:
+                # First stanza ends before the fixed statistics file stanza.
+                template=template[template.index(str(root)+'/state/rsyslog/stats.log'):]
+            runtime=root/'state/logrotate-runtime.conf'
+            try:
+                with runtime.open('w') as f:f.write(template)
+                os.chmod(runtime,0o600)
+                argv=['logrotate','--state',str(root/'state/logrotate.status'),str(runtime)]
+                r=subprocess.run(argv,capture_output=True,text=True,timeout=20)
+            finally:runtime.unlink(missing_ok=True)
             if r.returncode:result['rotation_error']=r.stderr[-4096:]
             else:result['last_rotation']=now
         result['retention']=prune_archives(c,now,compress=not result['pressure'])

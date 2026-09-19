@@ -22,7 +22,7 @@ ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'app'));sys.path.insert(0,str(ROOT/'scripts'))
 from config_tools import render
 from syslog_storage import storage_lock,prune_archives,open_inodes
-from syslog_status import SyslogObserver,stats_snapshot,process_identity
+from syslog_status import SyslogObserver,stats_snapshot,process_identity,write_errors
 from verify_remote_syslog import new_id,send,check
 from benchmark_syslog import benchmark
 BASE=json.loads((ROOT/'config.example.json').read_text())
@@ -118,8 +118,14 @@ class ReceiverIntegration(unittest.TestCase):
         with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:s.sendto(b'<14>Sep 19 00:00:00 fixture test: fail-write',('127.0.0.1',self.port))
         wait_for(lambda:observer.sample(receiver)['receiver']['write_healthy'] is False)
         self.assertEqual(observer.sample(receiver)['receiver']['state'],'RECEIVER_ERROR')
-        # Make sure the collector sees actual rsyslog failure output/counter as well.
-        wait_for(lambda:bool(stats_snapshot(self.root/'state/rsyslog/stats.log',time.time()).get('netblackbox_write',{}).get('failed')))
+        # Real dynafile errors may NOT increase action.failed: verify actual stderr evidence.
+        def errors():
+            self.log.flush()
+            return write_errors((self.root/'receiver-stderr.log').read_text())
+        wait_for(errors)
+        state=observer.sample(dict(receiver,write_error_messages=errors()))
+        self.assertFalse(state['receiver']['write_healthy'])
+        self.assertIsNone(state['receiver']['write_failure_count'])
     def test_more_than_thirty_real_rotations_and_continued_receipt(self):
         markers=[]
         for i in range(32):
