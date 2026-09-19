@@ -118,6 +118,13 @@ class ObserverTests(unittest.TestCase):
     def test_receiver_stopped_and_write_errors(self):
         r=self.observer.sample(dict(self.receiver,service_active=False),NOW,{});self.assertEqual(r['receiver']['state'],'RECEIVER_ERROR')
         r=self.observer.sample(self.receiver,NOW,self.stats(1,1));self.assertFalse(r['receiver']['write_healthy'])
+    def test_write_error_does_not_disappear_when_journal_window_expires(self):
+        r=self.observer.sample(dict(self.receiver,write_error_messages=['omfile write failed']),NOW,self.stats(1))
+        self.assertFalse(r['receiver']['write_healthy'])
+        r=self.observer.sample(self.receiver,NOW+300,self.stats(1))
+        self.assertFalse(r['receiver']['write_healthy'])
+        r=self.observer.sample(dict(self.receiver,process_identity='new-process'),NOW+301,self.stats(0))
+        self.assertTrue(r['receiver']['write_healthy'])
     def test_restart_retains_last_seen_and_resets_counter_scope(self):
         self.observer.sample(self.receiver,NOW-1,self.stats(0))
         self.observer.sample(self.receiver,NOW,self.stats(99))

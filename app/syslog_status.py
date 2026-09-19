@@ -127,9 +127,9 @@ class SyslogObserver:
         old_action=self.state.get('action',{}) if epoch==prior_epoch else {}
         increments=any(type(action.get(k)) is int and action[k]>old_action.get(k,0) for k in ('failed','suspended'))
         write_error=self.state.get('write_error',False) if epoch==prior_epoch else False
-        if increments:write_error=True
+        if increments or receiver.get('write_error_messages'):write_error=True
         # Only an explicit rsyslog resume clears a latched write error. 'processed' is not a durability acknowledgement.
-        if not increments and action.get('resumed',0)>old_action.get('resumed',0):
+        if not increments and not receiver.get('write_error_messages') and action.get('resumed',0)>old_action.get('resumed',0):
             write_error=False
         paths_ok=(self.root/'syslog').is_dir() and not (self.root/'syslog').is_symlink()
         for ip in set(self.c['syslog']['expected_sources'])|set(observed):

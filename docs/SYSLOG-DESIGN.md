@@ -45,7 +45,7 @@ HUP 用于重开已轮转的文件，不是重新解析全部配置，也不是�
 
 `GET /syslog` / `netblackbox syslog-status` 显示 receiver active、匹配 receiver PID 的 UDP/TCP listener、omfile failure/suspension 和本地写入错误状态。`write_healthy` 为观察到的本地输出状态，不是端到端/物理磁盘持久化证明；无数据时可为 null。
 
-impstats 每 10 秒输出到专属统计文件，读取最多 256 KiB 尾部，不每 10 秒递归扫描历史日志。统计文件以 1 MiB、2 份控制大小；它是遥测而非客户日志，不采用 30 天证据策略。source dynstats 最大 256 个活动计数器，86400 秒未使用可移除；字段明确标注 **receiver 进程/动态 counter 生存期的快照**，不是跨 reboot 精确累计计数。缺失/过期数据返回 null，不填假 0。write_failure_count 为 null（完整写入失败次数不可得）；action_failure_count 是不完整的 action failed 计数，不能当成所有 dynafile 写失败或丢失消息数量。另读取该 receiver PID 最近两分钟的有界 journal 错误，弥补某些 omfile 错误不增加计数的情况。
+impstats 每 10 秒输出到专属统计文件，读取最多 256 KiB 尾部，不每 10 秒递归扫描历史日志。统计文件以 1 MiB、2 份控制大小；它是遥测而非客户日志，不采用 30 天证据策略。source dynstats 最大 256 个活动计数器，86400 秒未使用可移除；字段明确标注 **receiver 进程/动态 counter 生存期的快照**，不是跨 reboot 精确累计计数。缺失/过期数据返回 null，不填假 0。write_failure_count 为 null（完整写入失败次数不可得）；action_failure_count 是不完整的 action failed 计数，不能当成所有 dynafile 写失败或丢失消息数量。另读取该 receiver PID 最近两分钟的有界 journal 错误，弥补某些 omfile 错误不增加计数的情况。明确写入错误会锁存，直到 rsyslog 报告 resumed 或 receiver 重启后重新建立观测；不会仅因两分钟错误窗口过去就自称恢复。
 
 可选 `expected_sources`，默认空数组。来源首次观测无证据为 UNKNOWN；计数变化时尝试读取当前/前一天文件最多各 64 KiB 的真实接收时间；若不能读到则使用统计变化的观测上界，并标明精度。不能因为启动后看见一个旧累计值就断言正在接收。跨 observer/receiver 重启保留 last seen 元数据但不把旧 counter 跨进程拼接为精确总数。统计容量限制/淘汰时标记计数范围，不影响原始日志接收。
 

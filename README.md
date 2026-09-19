@@ -114,6 +114,7 @@ sudo ./uninstall.sh --yes
 
 `netblackbox syslog-status` 或 `GET /syslog` 显示接收器自身状态及可选 `syslog.expected_sources`。**SILENT 只表示没有新日志，不是链路 DOWN。** 本机验证、跨主机验证和管理员手动设备验收分开报告 PASS/FAIL/NOT_TESTED。
 
+- [工程变更与测试报告](docs/V1.2-REPORT.md)
 - [升级与回滚](docs/UPGRADE-v1.2.md)
 - [Syslog 保留、磁盘保护和写入语义](docs/SYSLOG-DESIGN.md)
 - [分层验收与隔离 benchmark](docs/SYSLOG-ACCEPTANCE.md)
