@@ -86,6 +86,18 @@ class Tests(unittest.TestCase):
         r = nb.maintenance(self.c)
         self.assertEqual(r['deleted']['metrics'],1)
         self.assertEqual(self.e.db.execute('SELECT count(*) FROM metrics').fetchone()[0],1)
+    def test_upgrade_validation_preserves_old_metrics_and_incident_evidence(self):
+        root=Path(self.c['data_dir']);path=root/'incidents/old-evidence';path.mkdir()
+        (path/'summary.json').write_text('old evidence')
+        self.e.db.execute("INSERT INTO metrics(ts,boot_id,kind,data) VALUES(0,'old','probe','{}')")
+        self.e.db.execute("INSERT INTO incidents VALUES('old',0,1,'TEST',?,'{}')",(str(path),))
+        self.e.db.commit()
+        nb.atomic_json(root/'state/upgrade-in-progress.json',{'manifest':'pending'})
+        result=nb.maintenance(self.c)
+        self.assertTrue(result['upgrade_validation_only']);self.assertFalse(result['deleted'])
+        self.assertEqual((path/'summary.json').read_text(),'old evidence')
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM metrics WHERE boot_id='old'").fetchone()[0],1)
+        self.assertEqual(self.e.db.execute("SELECT count(*) FROM incidents WHERE id='old'").fetchone()[0],1)
     def test_system_boot_keeps_active_incident_and_existing_schema(self):
         for _ in range(3):self.e.process(probe(gateway=False))
         active=self.e.s['active']

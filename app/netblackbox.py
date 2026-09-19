@@ -647,6 +647,9 @@ def maintenance(c):
     root = Path(c['data_dir'])
     ret = c['retention']
     now = time.time()
+    if (root/'state/upgrade-in-progress.json').exists():
+        # Candidate validation may collect new evidence, but must not delete old evidence before commit.
+        return storage_report(c,{},upgrade_validation_only=True)
     db = sqlite3.connect(root/'db/netblackbox.sqlite3',timeout=5)
     db.execute('PRAGMA busy_timeout=5000')
     deleted = {}
@@ -672,6 +675,11 @@ def maintenance(c):
     db.commit()
     db.execute('PRAGMA wal_checkpoint(PASSIVE)')
     db.close()
+    return storage_report(c,deleted)
+
+
+def storage_report(c,deleted,upgrade_validation_only=False):
+    root=Path(c['data_dir']);ret=c['retention']
     size = sum(p.stat().st_size for p in (root/'incidents').rglob('*') if p.is_file() and not p.is_symlink())
     free = shutil.disk_usage(root).free
     syslog_storage = load_json(root/'state/syslog-storage.json',{})
@@ -680,7 +688,7 @@ def maintenance(c):
              'syslog':{**syslog_storage,'pressure':bool(syslog_storage.get('pressure',False))}}
     result = {'timestamp':iso(),'disk_free_bytes':free,'incident_bytes':size,
               'pressure':domains['disk']['pressure'] or domains['incident']['pressure'],
-              'domains':domains,
+              'domains':domains,'upgrade_validation_only':upgrade_validation_only,
               'syslog':syslog_storage,
               'deleted':{k:v for k,v in deleted.items() if v}}
     atomic_json(root/'state/storage.json',result)

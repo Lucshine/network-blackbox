@@ -26,6 +26,7 @@
 | 回滚忽略停止失败 | 停止失败则不覆写运行中的新程序；恢复/daemon-reload 失败不盲目启动 | 失败注入模型 |
 | static oneshot 被误 enable/disable | 单独处理可安装单元，保留 enabled/disabled/enabled-runtime 与原 active | 状态模型回归 |
 | 只启动 timer 未验证新 guard 能运行 | 先启动真实 guard oneshot 的“升级仅校验”路径；不轮转/不清理证据 | guard 逻辑测试；systemd 启动调用模型 |
+| 新 Agent 验收期间清理历史证据 | 事务标记存在时 Agent maintenance 只报告容量，不删除旧 metrics/events/incident | 真实 SQLite/incident 文件保留测试 |
 | 新暂停标记污染回滚旧版本 | 停止后备份 pause/error 控制元数据；回滚先归档新状态再恢复旧值 | 真文件内容测试，证据不删 |
 | Python 异常退出无法定位半成品 | 全量 preimage/校验值先 fsync，再持久化阶段标记；SIGTERM/普通异常回滚；不可捕获退出留手工恢复入口 | 子进程 os._exit 后真实文件恢复；不是断电测试 |
 | 并行安装/回滚竞争 | Linux 部署排他锁；read-only --check 不创建锁 | 不支持外部管理员绕过锁同时改文件 |
@@ -50,7 +51,7 @@ SIGKILL/主机掉电不能由 Python 异常处理捕获。备份与阶段标记�
 
 | 类型 | 执行方式 | 状态 |
 |---|---|---|
-| 既有 Agent、Syslog、安装器单元 | 本地及 Debian CI，临时目录 | PASS；原三组共60项（Agent14、安装器21、Syslog25） |
+| 既有 Agent、Syslog、安装器单元 | 本地及 Debian CI，临时目录 | PASS；原三组加新增保护共61项（Agent15、安装器21、Syslog25） |
 | 跨时区/跨午夜 | 独立 TZ 子进程：UTC、Asia/Shanghai、America/Los_Angeles；每个验证真实文件、解析时间、来源状态、重启/首采与 retention | PASS |
 | 升级顺序/失败回滚 | 真文件和备份 + 模拟服务执行器，覆盖写入后、receiver/Agent/guard/timer/验收失败、KeyboardInterrupt、容量二次检查失败、停止失败 | PASS；升级专项9项，其中阶段失败包含9个子场景；不能当作真实 systemd 验证 |
 | 不可捕获进程退出 | 独立子进程 os._exit，检查留下的 manifest/备份，手动恢复文件与控制状态 | PASS；不是整机断电 |
@@ -62,11 +63,12 @@ SIGKILL/主机掉电不能由 Python 异常处理捕获。备份与阶段标记�
 
 没有将 mock/systemd-analyze 的通过包装成真实 systemd active/enabled 生命周期通过，也没有在生产构造高流量或填盘。
 
-单元测试总数为79：既有60项 + 时区3项 + guard恢复7项 + 升级专项9项。隔离真实 rsyslog 集成为7项。最终 SHA 上的 CI 仍必须重新运行，结果由 PR 精确链接记录。
+单元测试总数为80：基础回归61项 + 时区3项 + guard恢复7项 + 升级专项9项。隔离真实 rsyslog 集成为7项。最终 SHA 上的 CI 仍必须重新运行，结果由 PR 精确链接记录。
 
 ## E. 变更文件
 
 - `app/log_time.py`：统一本地接收日期。
+- `app/netblackbox.py`：升级验证期间冻结历史 retention，继续报告压力。
 - `app/syslog_status.py`：本地日期查找和 guard 人工介入状态。
 - `app/syslog_storage.py`：统一日期、严格标记、暂停归属、清理后恢复、退避和升级校验模式。
 - `app/config_tools.py`：Agent 候选升级启动保护。
