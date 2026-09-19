@@ -23,8 +23,10 @@ import threading
 import time
 import urllib.parse
 import uuid
+from syslog_status import SyslogObserver, system_state, human
+from syslog_storage import load as load_json
 
-VERSION = '1.1.0'
+VERSION = '1.2.0'
 LOG = logging.getLogger('netblackbox')
 FIELDS = {'gateway': 'GATEWAY', 'internet': 'INTERNET', 'router_dns': 'ROUTER_DNS', 'public_dns': 'PUBLIC_DNS', 'https': 'HTTPS'}
 
@@ -224,6 +226,11 @@ def host_state(c):
 
 def snapshot(c, dest, summary):
     dest = Path(dest)
+    if (dest/'complete.json').is_file():
+        return str(dest)  # completed output survives a crash before SQLite job acknowledgement
+    if dest.exists():
+        # Preserve partial evidence before retrying a job interrupted by process/system exit.
+        os.rename(dest,dest.with_name(dest.name+'_interrupted_'+uuid.uuid4().hex[:8]))
     dest.mkdir(parents=True, exist_ok=True)
     n = network()
     limit = c['retention']['snapshot_command_max_bytes']
@@ -269,6 +276,7 @@ def snapshot(c, dest, summary):
         if p.is_file():
             with p.open('rb') as f:
                 os.fsync(f.fileno())
+    atomic_json(dest/'complete.json',{'completed_at':iso()})
     return str(dest)
 
 SCHEMA = '''
@@ -295,6 +303,8 @@ class Engine:
         self.boot = read('/proc/sys/kernel/random/boot_id')
         self.s = self.get('engine', {'stable':{},'counts':{},'bad_count':0,'good_count':0,'active':None,'nic_until':0})
         self.status = {}
+        self.syslog_status = {}
+        self.syslog_observer = SyslogObserver(c)
         self.lock = threading.Lock()
         self.snapshot_pool = futures.ThreadPoolExecutor(max_workers=2)
         self.running = {}
@@ -425,6 +435,17 @@ class Engine:
             self.event('NIC_ERROR_RECOVER',{'interface':h['default_interface']})
             self.s['nic_active'] = False
         self.host = h
+        try:
+            observed=self.syslog_observer.sample(system_state(self.c,command),now)
+            with self.lock:self.syslog_status=observed
+            previous=self.get('syslog_receiver_state',None)
+            current=observed['receiver']['state']
+            if current!=previous:
+                self.event('SYSLOG_RECEIVER_STATE',{'previous':previous,'current':current})
+                self.set('syslog_receiver_state',current)
+        except (OSError,ValueError) as e:
+            with self.lock:self.syslog_status={'receiver':{'state':'UNKNOWN'},'error':str(e)}
+            LOG.warning('Syslog observer unavailable: %s',e)
         self.set('last_host',h)
         self.db.execute('INSERT INTO metrics(ts,boot_id,kind,data) VALUES(?,?,?,?)',(now,self.boot,'host',json.dumps(h,separators=(',',':'))))
         self.save()
@@ -462,8 +483,14 @@ class Engine:
     def maintenance_done(self):
         if not self.maintenance_future or not self.maintenance_future.done():
             return
-        result = self.maintenance_future.result()
-        self.maintenance_future = None
+        future=self.maintenance_future
+        self.maintenance_future=None
+        try:result=future.result()
+        except Exception as e:
+            LOG.exception('Maintenance failed; retry on next cycle')
+            self.event('MAINTENANCE_FAILED',{'error':str(e)})
+            self.db.commit()
+            return
         if result['pressure'] != self.get('storage_pressure',False):
             self.event('STORAGE_PRESSURE' if result['pressure'] else 'STORAGE_RECOVER',result)
         self.set('storage_pressure',result['pressure'])
@@ -479,6 +506,9 @@ class Engine:
                 if self.path == '/health':
                     body = handler_engine.health()
                     code = 200 if body['healthy'] else 503
+                elif self.path == '/syslog':
+                    with handler_engine.lock:body=copy.deepcopy(handler_engine.syslog_status)
+                    code=200 if body else 503
                 elif self.path == '/status':
                     with handler_engine.lock:
                         body = copy.deepcopy(handler_engine.status)
@@ -500,7 +530,7 @@ class Engine:
             def setup(self):
                 super().setup()
                 self.connection.settimeout(3)
-        server = http.server.ThreadingHTTPServer((self.c['api']['host'],self.c['api']['port']),Handler)
+        server = http.server.HTTPServer((self.c['api']['host'],self.c['api']['port']),Handler)
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever,daemon=True).start()
         for sig in (signal.SIGTERM,signal.SIGINT):
@@ -510,38 +540,48 @@ class Engine:
         try:
             while not self.stop.is_set():
                 now,mono = time.time(),time.monotonic()
-                self.jobs(now)
-                self.maintenance_done()
-                if mono >= next_host:
-                    self.collect_host(now)
-                    next_host = mono+self.c['host_interval_seconds']
-                if mono >= next_probe:
-                    p = probes(self.c)
-                    self.process(p)
-                    self.last_cycle = time.monotonic()
-                    self.error = None
-                    if not ready:
-                        notify('READY=1')
-                        ready = True
+                try:
+                    self.jobs(now)
+                    self.maintenance_done()
+                    if mono >= next_host:
+                        self.collect_host(now)
+                        next_host = mono+self.c['host_interval_seconds']
+                    if mono >= next_probe:
+                        p = probes(self.c)
+                        self.process(p)
+                        self.last_cycle = time.monotonic()
+                        self.error = None
+                        if not ready:
+                            notify('READY=1')
+                            ready = True
+                        notify('WATCHDOG=1')
+                        next_probe = mono+self.c['probe_interval_seconds']
+                    if mono >= next_maintenance and self.maintenance_future is None:
+                        self.maintenance_future = self.maintenance_pool.submit(maintenance,self.c)
+                        next_maintenance = mono+self.c['retention']['maintenance_seconds']
+                    cloud = self.c['cloud']
+                    if self.cloud_future and self.cloud_future.done():
+                        ok = self.cloud_future.result()
+                        prev = self.get('cloud_ok',None)
+                        if ok != prev:
+                            self.event('HEARTBEAT_SEND_RECOVER' if ok else 'HEARTBEAT_SEND_FAIL',{'success':ok})
+                        self.set('cloud_ok',ok)
+                        self.db.commit()
+                        self.cloud_future = None
+                    if cloud['enabled'] and self.cloud_future is None and self.status and now-self.get('cloud_last_attempt',0) >= max(60,cloud['interval_seconds']):
+                        # Commit timestamp before dispatch: restart cannot bypass rate limit.
+                        self.set('cloud_last_attempt',now)
+                        self.db.commit()
+                        self.cloud_future = self.cloud_pool.submit(heartbeat,cloud,copy.deepcopy(self.status))
+                except (OSError,sqlite3.OperationalError) as e:
+                    self.error=str(e)
+                    LOG.error('Collection degraded; retrying without losing committed state: %s',e)
+                    try:
+                        self.db.rollback()
+                        self.s=self.get('engine',self.s)
+                    except sqlite3.Error:pass
                     notify('WATCHDOG=1')
-                    next_probe = mono+self.c['probe_interval_seconds']
-                if mono >= next_maintenance and self.maintenance_future is None:
-                    self.maintenance_future = self.maintenance_pool.submit(maintenance,self.c)
-                    next_maintenance = mono+self.c['retention']['maintenance_seconds']
-                cloud = self.c['cloud']
-                if self.cloud_future and self.cloud_future.done():
-                    ok = self.cloud_future.result()
-                    prev = self.get('cloud_ok',None)
-                    if ok != prev:
-                        self.event('HEARTBEAT_SEND_RECOVER' if ok else 'HEARTBEAT_SEND_FAIL',{'success':ok})
-                    self.set('cloud_ok',ok)
-                    self.db.commit()
-                    self.cloud_future = None
-                if cloud['enabled'] and self.cloud_future is None and self.status and now-self.get('cloud_last_attempt',0) >= max(60,cloud['interval_seconds']):
-                    # Commit timestamp before dispatch: restart cannot bypass rate limit.
-                    self.set('cloud_last_attempt',now)
-                    self.db.commit()
-                    self.cloud_future = self.cloud_pool.submit(heartbeat,cloud,copy.deepcopy(self.status))
+                    self.stop.wait(5)
                 self.stop.wait(0.5)
         except Exception as e:
             self.error = str(e)
@@ -553,9 +593,13 @@ class Engine:
             self.snapshot_pool.shutdown(wait=True)
             self.cloud_pool.shutdown(wait=True)
             self.maintenance_pool.shutdown(wait=True)
-            self.event('SERVICE_STOP',{})
-            self.save()
-            self.db.close()
+            try:
+                # Complete results are marked in files; pending running jobs resume idempotently.
+                self.event('SERVICE_STOP',{})
+                self.save()
+            except (OSError,sqlite3.Error):
+                LOG.exception('Unable to persist clean shutdown')
+            finally:self.db.close()
 
 def notify(msg):
     path = os.environ.get('NOTIFY_SOCKET')
@@ -609,25 +653,16 @@ def maintenance(c):
         db.execute('DELETE FROM snapshot_jobs WHERE incident_id=?',(ident,))
         db.execute('DELETE FROM incidents WHERE id=?',(ident,))
         deleted['incidents'] = deleted.get('incidents',0)+1
-    # Date in filename is receive date, not untrusted remote timestamp or mutable mtime.
-    cutoff = dt.datetime.fromtimestamp(now,dt.timezone.utc).date()-dt.timedelta(days=ret['syslog_days'])
-    for p in (root/'syslog').glob('*/*'):
-        if not p.is_file() or p.is_symlink():
-            continue
-        try:
-            day = dt.date.fromisoformat(p.name[:10])
-        except ValueError:
-            continue
-        if day < cutoff:
-            p.unlink()
-            deleted['syslog_files'] = deleted.get('syslog_files',0)+1
+    # Syslog deletion/rotation belongs exclusively to syslog_storage.py under its lock.
     db.commit()
     db.execute('PRAGMA wal_checkpoint(PASSIVE)')
     db.close()
     size = sum(p.stat().st_size for p in (root/'incidents').rglob('*') if p.is_file() and not p.is_symlink())
     free = shutil.disk_usage(root).free
+    syslog_storage = load_json(root/'state/syslog-storage.json',{})
     result = {'timestamp':iso(),'disk_free_bytes':free,'incident_bytes':size,
-              'pressure':free<ret['min_free_mb']*1024**2 or size>ret['snapshot_budget_mb']*1024**2,
+              'pressure':free<ret['min_free_mb']*1024**2 or size>ret['snapshot_budget_mb']*1024**2 or syslog_storage.get('pressure',False),
+              'syslog':syslog_storage,
               'deleted':{k:v for k,v in deleted.items() if v}}
     atomic_json(root/'state/storage.json',result)
     return result
@@ -635,19 +670,21 @@ def maintenance(c):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config',default='/etc/netblackbox/config.json')
-    parser.add_argument('action',nargs='?',default='daemon',choices=['daemon','status','health','incidents','last-incident','test','snapshot','config','validate','maintenance'])
+    parser.add_argument('action',nargs='?',default='daemon',choices=['daemon','status','health','incidents','last-incident','test','snapshot','config','validate','maintenance','syslog-status'])
     args = parser.parse_args()
     c = load_config(args.config)
     os.umask(0o077)
     if args.action == 'validate':
         print('Configuration valid')
-    elif args.action in ('health','status'):
+    elif args.action in ('health','status','syslog-status'):
         import urllib.request
         import urllib.error
         try:
+            endpoint='syslog' if args.action=='syslog-status' else args.action
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with opener.open(f"http://127.0.0.1:{c['api']['port']}/{args.action}",timeout=5) as response:
-                print(json.dumps(json.load(response),ensure_ascii=False,indent=2))
+            with opener.open(f"http://127.0.0.1:{c['api']['port']}/{endpoint}",timeout=5) as response:
+                result=json.load(response)
+                print(human(result) if args.action=='syslog-status' else json.dumps(result,ensure_ascii=False,indent=2))
         except urllib.error.HTTPError as e:
             print(e.read().decode())
             return 1

@@ -6,7 +6,19 @@ import re
 import urllib.parse
 
 
+def apply_defaults(c):
+    """Additive v1.1 -> v1.2 migration; data paths and legacy keys are retained."""
+    sy=c['syslog']
+    for k,v in {'write_mode':'performance','expected_sources':[], 'silent_seconds':300}.items():
+        sy.setdefault(k,v)
+    r=c['retention']
+    r.setdefault('syslog_budget_mb',1024)
+    r.setdefault('syslog_stop_free_mb',min(256,max(32,r['min_free_mb']//4)))
+    return c
+
+
 def validate(c):
+    apply_defaults(c)
     def number(v,low,high,name):
         if type(v) is not int or not low <= v <= high:
             raise ValueError(f'{name}: expected integer {low}..{high}')
@@ -19,6 +31,10 @@ def validate(c):
         raise ValueError('API must stay on 127.0.0.1')
     number(c['api']['port'],1024,65535,'api.port')
     sy=c['syslog']
+    if sy['write_mode'] not in ('performance','durability'): raise ValueError('syslog.write_mode must be performance or durability')
+    number(sy['silent_seconds'],30,86400,'syslog.silent_seconds')
+    if not isinstance(sy['expected_sources'],list) or len(sy['expected_sources'])>256:raise ValueError('expected_sources requires at most 256 IPv4 addresses')
+    for source in sy['expected_sources']:ipaddress.IPv4Address(source)
     listen=ipaddress.IPv4Address(sy['listen_address'])
     if listen.is_unspecified or listen.is_loopback or listen.is_multicast or listen.is_reserved:
         raise ValueError('syslog.listen_address must be a specific unicast LAN IPv4 address')
@@ -53,6 +69,8 @@ def validate(c):
     r=c['retention']
     for k,low,high in [('metrics_days',7,365),('events_days',90,3650),('incident_days',90,3650),('syslog_days',30,3650),('maintenance_seconds',30,3600),('min_free_mb',128,1048576),('snapshot_budget_mb',128,1048576),('snapshot_command_max_bytes',8192,1048576),('syslog_maxsize_mb',1,1024),('syslog_rotate',30,10000),('journal_max_use_mb',32,65536),('journal_days',1,3650)]:
         number(r[k],low,high,'retention.'+k)
+    number(r['syslog_budget_mb'],32,1048576,'retention.syslog_budget_mb')
+    number(r['syslog_stop_free_mb'],16,r['min_free_mb']-1,'retention.syslog_stop_free_mb')
     for section,key in [('cloud','enabled'),('pve','enabled'),('journald','configure_persistent')]:
         if type(c[section][key]) is not bool: raise ValueError(f'{section}.{key} must be boolean')
     cloud=c['cloud']
@@ -78,7 +96,11 @@ def render(c,app_dir):
         rules.append(f'($.source >= {int(n.network_address)} and $.source <= {int(n.broadcast_address)})')
     acl=' or '.join(rules)
     syslog=f'''# Network Blackbox: independent rsyslog instance, no local inputs/includes.
-global(workDirectory="{root}/state/rsyslog")
+global(workDirectory="{root}/state/rsyslog" maxMessageSize="8k")
+main_queue(queue.type="FixedArray" queue.size="4096" queue.workerThreads="1" queue.dequeueBatchSize="128")
+module(load="impstats" interval="10" severity="7" resetCounters="off"
+       log.syslog="off" log.file="{root}/state/rsyslog/stats.log" format="json")
+dyn_stats(name="netblackbox_sources" resettable="off" maxCardinality="256" unusedMetricLife="86400")
 module(load="imudp")
 module(load="imtcp")
 $AllowedSender UDP, {', '.join(sy['allowed_networks'])}
@@ -88,9 +110,16 @@ template(name="NetBlackboxLine" type="string" string="%timegenerated:::date-rfc3
 ruleset(name="NetBlackboxLAN") {{
     set $.source = ipv42num($fromhost-ip);
     if not ({acl}) then {{ stop }}
-    action(type="omfile" dynaFile="NetBlackboxPath" template="NetBlackboxLine"
+    # Count accepted source messages independently of successful file output.
+    # Test traffic is intentionally excluded from real-device activity status.
+    if not ($msg contains "NETBLACKBOX_TEST_" or $msg contains "NETBLACKBOX_VERIFY_") then {{
+        set $.counter = dyn_inc("netblackbox_sources", $fromhost-ip);
+    }}
+    action(name="netblackbox_write" type="omfile" dynaFile="NetBlackboxPath" template="NetBlackboxLine"
            dirCreateMode="0700" fileCreateMode="0600" dynaFileCacheSize="32"
-           flushOnTXEnd="on" sync="on")
+           queue.type="Direct" asyncWriting="off" flushOnTXEnd="on"
+           sync="{'on' if sy['write_mode']=='durability' else 'off'}"
+           action.resumeRetryCount="0")
     stop
 }}
 input(type="imudp" address="{sy['listen_address']}" port="{sy['port']}" ruleset="NetBlackboxLAN" ratelimit.interval="1" ratelimit.burst="2000")
@@ -105,6 +134,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+ExecCondition=/usr/bin/python3 /opt/netblackbox/syslog_storage.py --receiver-allowed
 ExecStartPre=/usr/sbin/rsyslogd -N1 -f /etc/netblackbox/rsyslog.conf
 ExecStart=/usr/sbin/rsyslogd -n -f /etc/netblackbox/rsyslog.conf -i /run/netblackbox-syslog/pid
 ExecReload=/bin/sh -c '/usr/sbin/rsyslogd -N1 -f /etc/netblackbox/rsyslog.conf && /bin/kill -HUP "$MAINPID"'
@@ -118,6 +148,9 @@ ReadWritePaths={root}
 ProtectHome=true
 PrivateTmp=true
 MemoryMax=128M
+TasksMax=64
+CPUQuota=30%
+Nice=10
 StandardOutput=journal
 StandardError=journal
 
@@ -126,9 +159,9 @@ WantedBy=multi-user.target
 '''
     rotate=f'''{root}/syslog/*/*.log {{
     daily
-    rotate {r['syslog_rotate']}
+    rotate -1
     maxsize {r['syslog_maxsize_mb']}M
-    compress
+    nocompress
     missingok
     notifempty
     nocreate
@@ -140,22 +173,37 @@ WantedBy=multi-user.target
         /usr/bin/systemctl kill -s HUP --kill-who=main netblackbox-syslog.service
     endscript
 }}
+{root}/state/rsyslog/stats.log {{
+    size 1M
+    rotate 2
+    nocompress
+    missingok
+    notifempty
+    nocreate
+    su root root
+    postrotate
+        /usr/bin/systemctl kill -s HUP --kill-who=main netblackbox-syslog.service
+    endscript
+}}
 '''
     rotate_unit=f'''[Unit]
 Description=Rotate Network Blackbox syslog
 
 [Service]
 Type=oneshot
-ExecStart=/usr/sbin/logrotate --state {root}/state/logrotate.status /etc/netblackbox/logrotate.conf
+ExecStart=/usr/bin/python3 /opt/netblackbox/syslog_storage.py
+TimeoutStartSec=60
+MemoryMax=128M
+CPUQuota=20%
 Nice=15
 '''
     timer='''[Unit]
-Description=Check Network Blackbox log size every 5 minutes
+Description=Guard Network Blackbox storage every 30 seconds
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
-RandomizedDelaySec=10
+OnBootSec=15s
+OnUnitActiveSec=30s
+RandomizedDelaySec=2
 
 [Install]
 WantedBy=timers.target

@@ -32,8 +32,11 @@ jobs:
         run: |
           python3 tests/test_agent.py
           python3 -m unittest discover -s tests -p 'test_portable.py' -v
+          python3 -m unittest discover -s tests -p 'test_syslog.py' -v
           sh -n install.sh
           sh -n uninstall.sh
+      - name: Real rsyslog integration (isolated container)
+        run: python3 tests/integration/test_rsyslog.py
       - name: Repository privacy check
         run: python3 scripts/check_repository.py --history
       - name: Validate generated service configuration

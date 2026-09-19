@@ -18,13 +18,13 @@ import uuid
 
 ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT/'app'))
-from config_tools import render,validate
+from config_tools import render,validate,apply_defaults
 
 STATE=Path('/etc/netblackbox/install-state.json')
 CONFIG=Path('/etc/netblackbox/config.json')
 UNITS=['netblackbox.service','netblackbox-syslog.service','netblackbox-logrotate.timer','netblackbox-logrotate.service']
 PACKAGES=['rsyslog','curl','jq','bind9-dnsutils','iproute2','iputils-ping','ethtool','conntrack','sqlite3','python3','ca-certificates','procps','util-linux','logrotate']
-APP_FILES=['netblackbox.py','config_tools.py','simulate_failure.py']
+APP_FILES=['netblackbox.py','config_tools.py','simulate_failure.py','syslog_storage.py','syslog_status.py']
 DOC_FILES=['LICENSE','README.md','docs/CONFIGURATION.md','docs/OPERATIONS.md','docs/PVE.md','docs/IMMORTALWRT.md','VERSION']
 ALLOWED={'/etc/netblackbox/config.json','/etc/netblackbox/rsyslog.conf','/etc/netblackbox/logrotate.conf',str(STATE),
          '/etc/systemd/journald.conf.d/60-netblackbox.conf','/usr/local/bin/netblackbox'} | {'/etc/systemd/system/'+u for u in UNITS} | {'/opt/netblackbox/'+f for f in APP_FILES+DOC_FILES}
@@ -101,7 +101,7 @@ def selected_config(args):
     if CONFIG.exists():
         if not STATE.exists():
             raise RuntimeError('Existing installation is not managed by this installer. Refusing implicit migration; see docs/OPERATIONS.md')
-        old=json.loads(CONFIG.read_text())
+        old=apply_defaults(json.loads(CONFIG.read_text()))
         if args.config:
             new=json.loads(Path(args.config).read_text());validate(new)
             if new!=old and not args.replace_config:
@@ -166,7 +166,7 @@ def preflight(c,files):
         raise RuntimeError('Conflicting installation found. Remove the conflicting integration before installing; see docs/OPERATIONS.md')
     state=json.loads(STATE.read_text()) if STATE.exists() else None
     if state and state.get('manager')!='netblackbox-portable':raise RuntimeError('Unknown install-state owner')
-    old=json.loads(CONFIG.read_text()) if CONFIG.exists() else None
+    old=apply_defaults(json.loads(CONFIG.read_text())) if CONFIG.exists() else None
     for p in [*files,str(STATE),c['data_dir']]:ensure_safe_path(p)
     for p in files:
         if Path(p).exists() and (not state or p not in state['files']):
@@ -299,6 +299,10 @@ def install(args):
         for i,argv in enumerate(checks):
             result=run(argv,timeout=30,check=False);write_json(folder/f'config-check-{i}.json',result)
             if result['returncode']:raise RuntimeError('Generated configuration check failed: '+result['stderr'])
+        changing=any(not Path(p).exists() or Path(p).read_text()!=text for p,(text,mode) in files.items())
+        if changing:
+            # Prevent old rotate-30 timer from running during replacement; snapshot original service states first.
+            run(['systemctl','stop','netblackbox-logrotate.timer','netblackbox-logrotate.service'],timeout=100)
         changed=[]
         for path,(text,mode) in files.items():
             if tx.put(path,text,mode):changed.append(path)
@@ -306,7 +310,7 @@ def install(args):
         if old:
             for path in old['files']:
                 if path not in files:tx.remove(path);changed.append(path)
-        state={'manager':'netblackbox-portable','version':'1.1.0','data_dir':str(root),'latest_install':str(folder),
+        state={'manager':'netblackbox-portable','version':'1.2.0','data_dir':str(root),'latest_install':str(folder),
                'files':{p:digest(text.encode()) for p,(text,_) in files.items()}}
         tx.put(str(STATE),json.dumps(state,indent=2)+'\n',0o600)
         tx.manifest['phase']='installed';tx.persist()
