@@ -47,14 +47,14 @@ def cases(zone):
         file1.unlink()
         assert recent_file_time(root,'192.0.2.1',after)==stamp2
         for ident in ('boot:receiver:2','new-boot:receiver:3'):
-            result=SyslogObserver(c).sample(dict(receiver,process_identity=ident),after+1,stats(2))['sources'][0]
+            result=SyslogObserver(c).sample(dict(receiver,process_identity=ident),after+1,stats(0))['sources'][0]
             assert result['last_received_at']==stamp2 and result['state']=='RECEIVING'
         observer=SyslogObserver(c)
-        result=observer.sample(dict(receiver,process_identity='new-boot:receiver:3'),after+400,stats(2))['sources'][0]
+        result=observer.sample(dict(receiver,process_identity='new-boot:receiver:3'),after+400,stats(0))['sources'][0]
         assert result['last_received_at']==stamp2 and result['state']=='SILENT'
         # First sample on a new observer/system without old observer metadata must still parse actual file timestamp.
         (root/'state/syslog-observer.json').unlink()
-        result=SyslogObserver(c).sample(receiver,after+1,stats(2))['sources'][0]
+        result=SyslogObserver(c).sample(receiver,after+1,stats(0))['sources'][0]
         assert result['last_received_at']==stamp2 and result['state']=='RECEIVING'
         (root/'state/syslog-observer.json').unlink();file2.unlink()
         assert SyslogObserver(c).sample(receiver,after+1,stats(0))['sources'][0]['state']=='UNKNOWN'

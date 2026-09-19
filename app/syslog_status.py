@@ -152,18 +152,19 @@ class SyslogObserver:
             count=observed.get(ip)
             changed=count is not None and count>0 and (epoch!=prior_epoch or count!=prior.get('counter'))
             last=prior.get('last_received_at');precision=prior.get('timestamp_precision','unknown')
-            if changed:
+            baseline=epoch!=prior_epoch or not prior.get('baseline_checked',False)
+            if changed or baseline:
                 file_time=recent_file_time(self.root,ip,now)
                 if file_time:
                     last=file_time
                     precision='rsyslog receive timestamp from bounded current/previous-day log tail'
-                elif epoch==prior_epoch and prior.get('counter') is not None:
+                elif changed and epoch==prior_epoch and prior.get('counter') is not None:
                     last=dt.datetime.fromtimestamp(now,dt.timezone.utc).isoformat()
                     precision='counter-change observation upper bound; arrival since previous available sample'
                 # First observation/restart cannot make an old counter imply recent traffic.
 
             source_states[ip]={'counter':count if count is not None else prior.get('counter'),
-                               'last_received_at':last,'timestamp_precision':precision}
+                               'last_received_at':last,'timestamp_precision':precision,'baseline_checked':True}
             recent=last and now-dt.datetime.fromisoformat(last).timestamp()<=self.c['syslog']['silent_seconds']
             state='RECEIVER_ERROR' if error else 'RECEIVING' if recent else 'SILENT' if last else 'UNKNOWN'
             sources.append({'ip':ip,'expected':ip in self.c['syslog']['expected_sources'],'last_received_at':last,

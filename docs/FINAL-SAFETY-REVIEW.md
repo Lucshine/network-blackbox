@@ -12,6 +12,7 @@
 - 没有使用 `date-utc`，文件名日期随接收服务的本地时区；正文 `%timegenerated:::date-rfc3339%` 带时区偏移。
 - 旧 `recent_file_time()` 用 UTC 当天/前一天，上海本地进入次日时会漏找唯一的当天文件。retention/压缩日期也曾用 UTC，语义不一致。
 - 新 `app/log_time.py:receive_day()` 使用服务器本地日历日期；recent_file_time、归档保留/压缩，以及验收脚本的默认搜索日起点与之统一。内部 event/incident UTC 时间不改。
+- Receiver/系统重启后 counter 为 0 的首次采样，也会对预期来源执行一次有界文件基线读取；Observer 保存 baseline 标记，安静时不反复扫描。
 - 不改 rsyslog 模板格式，不重命名/迁移历史文件；已有多留一天的保守保留余量不变。要求 receiver、Agent、guard 使用同一主机时区，不配置独立 TZ override。
 
 官方说明：[timegenerated](https://docs.rsyslog.com/doc/reference/properties/message-timegenerated.html)、[property replacer/date-utc](https://docs.rsyslog.com/doc/configuration/property_replacer.html)。隔离真实 rsyslog 测试另以 UTC/Asia/Shanghai 验证收到的文件名和正文偏移，并发送旧的设备时间，证明取的是接收时间。
