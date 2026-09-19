@@ -19,6 +19,7 @@ import uuid
 ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT/'app'))
 from config_tools import render,validate,apply_defaults
+from syslog_storage import inventory as syslog_inventory
 
 STATE=Path('/etc/netblackbox/install-state.json')
 CONFIG=Path('/etc/netblackbox/config.json')
@@ -176,13 +177,29 @@ def preflight(c,files):
     free=shutil.disk_usage(ancestor).free
     if free < (c['retention']['min_free_mb']+256)*1024**2:
         raise RuntimeError(f'Insufficient disk space: {free//1024**2} MiB free; need reserve + 256 MiB')
+    # Read-only, bounded inventory using exactly the guard's ownership/byte accounting rules.
+    # Do not take storage_lock here: opening it would mutate state during --check.
+    try:usage=syslog_inventory(c['data_dir'])
+    except (OSError,ValueError) as e:
+        raise RuntimeError('Cannot verify managed Syslog usage; upgrade blocked. '
+                           'Check data_dir permissions and inventory size, then rerun --check: '+str(e)) from e
+    budget=c['retention']['syslog_budget_mb']*1024**2
+    if usage['syslog_bytes']>=budget:
+        raise RuntimeError(
+            f"Managed Syslog usage {usage['syslog_bytes']} bytes ({usage['syslog_bytes']/1024**2:.2f} MiB) "
+            f"reaches/exceeds configured syslog_budget_mb={c['retention']['syslog_budget_mb']} "
+            f"({budget} bytes); upgrade blocked before changes. "
+            'Increase retention.syslog_budget_mb with disk headroom in your candidate config and rerun '
+            './install.sh --config edited-site.json --replace-config --check, or archive evidence to '
+            'separate storage using an administrator-approved process and recheck. '
+            'No historical logs or other evidence have been deleted.')
     installed=package_state()
     plain={k.split(':')[0] for k in installed}
     missing=[p for p in PACKAGES if p not in plain]
     port_free(c['syslog']['listen_address'],c['syslog']['port'],socket.SOCK_DGRAM,'netblackbox-syslog.service',old,c)
     port_free(c['syslog']['listen_address'],c['syslog']['port'],socket.SOCK_STREAM,'netblackbox-syslog.service',old,c)
     port_free(c['api']['host'],c['api']['port'],socket.SOCK_STREAM,'netblackbox.service',old,c)
-    return {'free_mb':free//1024**2,'missing_packages':missing,'packages_before':installed,'services_before':unit_state(),'previous_install':state}
+    return {'free_mb':free//1024**2,'syslog_usage':usage,'syslog_budget_bytes':budget,'missing_packages':missing,'packages_before':installed,'services_before':unit_state(),'previous_install':state}
 
 
 def audit(folder):
@@ -259,7 +276,7 @@ def restore_manifest(manifest):
 
 def install(args):
     c=selected_config(args);files=payload(c);info=preflight(c,files)
-    print(json.dumps({k:v for k,v in info.items() if k in ('free_mb','missing_packages','services_before')},indent=2))
+    print(json.dumps({k:v for k,v in info.items() if k in ('free_mb','syslog_usage','syslog_budget_bytes','missing_packages','services_before')},indent=2))
     print('Firewall is NOT changed; syslog ACL is enforced in the isolated receiver. See docs/OPERATIONS.md for LAN allow rules.')
     if args.check:
         print('Read-only preflight complete; no files/packages/services changed.');return

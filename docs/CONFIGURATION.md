@@ -42,7 +42,7 @@ Agent 和系统重启后从 SQLite 续接 active incident/待执行任务；错�
 
 默认：metrics 7 天、events 90 天、已恢复 incident 90 天、syslog 至少 30 天；每 300 秒维护。SQLite 空闲页复用，checkpoint 处理 WAL，不随历史天数无限增长。syslog 按来源 IP 与接收日期保存；logrotate daily/rotate -1/nocompress，以 16 MiB maxsize 每 5 分钟检查。独立维护器每 30 秒检查磁盘阈值，并负责互斥的轮转、关闭文件后压缩和按日期清理；Agent 不再重复删除 syslog。旧 syslog_rotate 配置保留但不控制删除。
 
-低于 1 GiB 空闲或 incident 超过 1 GiB 时，保留状态/指标和 incident 元数据，跳过后续大快照并记录 STORAGE_PRESSURE。不会提前删掉 90 天内 incident。syslog_budget_mb 默认 1024；剩余低于 syslog_stop_free_mb（默认 256）或达到 syslog 预算时，会暂停专用 receiver 并保留已有日志。高流量日志、频繁故障、其他软件和手工导出仍可能在采样间隔内填满共享盘，容量阈值不是硬配额。详见 SYSLOG-DESIGN.md。exports/审计/安装备份不自动清理，管理员负责归档。
+低于 1 GiB 空闲或 incident 超过 1 GiB 时，保留状态/指标和 incident 元数据，跳过后续大快照并记录 STORAGE_PRESSURE。不会提前删掉 90 天内 incident。压力状态分为 disk、incident、syslog 三域；Syslog 自身容量预警不抑制 Incident 快照。syslog_budget_mb 默认 1024；剩余低于 syslog_stop_free_mb（默认 256）或达到 syslog 预算时，会暂停专用 receiver 并保留已有日志。高流量日志、频繁故障、其他软件和手工导出仍可能在采样间隔内填满共享盘，容量阈值不是硬配额。详见 SYSLOG-DESIGN.md。exports/审计/安装备份不自动清理，管理员负责归档。
 
 程序时间为 UTC；syslog 接收日期按 rsyslog/系统时区格式化，不修改目标系统时区。定期清理允许日边界误差；排查时注意时区换算。
 

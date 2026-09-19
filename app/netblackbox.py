@@ -471,9 +471,14 @@ class Engine:
         if available:
             rows = self.db.execute("SELECT j.id,j.label,i.path,i.summary FROM snapshot_jobs j JOIN incidents i ON i.id=j.incident_id WHERE j.status='pending' AND j.due<=? ORDER BY j.due LIMIT ?",(now,available)).fetchall()
             for ident,label,path,summary in rows:
-                if self.get('storage_pressure',False) or shutil.disk_usage(self.root).free<self.c['retention']['min_free_mb']*1024**2:
-                    self.db.execute("UPDATE snapshot_jobs SET status='skipped',error='Storage pressure; metadata and rolling probes retained' WHERE id=?",(ident,))
-                    self.event('SNAPSHOT_SKIPPED',{'job_id':ident,'reason':'storage_pressure'})
+                # Never consult the legacy aggregate flag: it may contain a persisted Syslog-only warning.
+                disk_pressure=shutil.disk_usage(self.root).free<self.c['retention']['min_free_mb']*1024**2
+                incident_pressure=self.get('incident_storage_pressure',False)
+                if disk_pressure or incident_pressure:
+                    domains=[name for name,value in (('disk',disk_pressure),('incident',incident_pressure)) if value]
+                    reason='Storage pressure: '+','.join(domains)+'; metadata and rolling probes retained'
+                    self.db.execute("UPDATE snapshot_jobs SET status='skipped',error=? WHERE id=?",(reason,ident))
+                    self.event('SNAPSHOT_SKIPPED',{'job_id':ident,'reason':'storage_pressure','domains':domains})
                     continue
                 self.db.execute("UPDATE snapshot_jobs SET status='running' WHERE id=?",(ident,))
                 self.db.commit()
@@ -496,8 +501,13 @@ class Engine:
             self.event('MAINTENANCE_FAILED',{'error':str(e)})
             self.db.commit()
             return
-        if result['pressure'] != self.get('storage_pressure',False):
-            self.event('STORAGE_PRESSURE' if result['pressure'] else 'STORAGE_RECOVER',result)
+        for component,domain in result['domains'].items():
+            key=component+'_storage_pressure'
+            if domain['pressure'] != self.get(key,False):
+                self.event('STORAGE_PRESSURE' if domain['pressure'] else 'STORAGE_RECOVER',
+                           {'component':component,'storage':domain})
+            self.set(key,domain['pressure'])
+        # Compatibility summary for existing consumers; only snapshot-relevant domains, never Syslog.
         self.set('storage_pressure',result['pressure'])
         self.db.commit()
         if result.get('deleted'):
@@ -665,8 +675,12 @@ def maintenance(c):
     size = sum(p.stat().st_size for p in (root/'incidents').rglob('*') if p.is_file() and not p.is_symlink())
     free = shutil.disk_usage(root).free
     syslog_storage = load_json(root/'state/syslog-storage.json',{})
+    domains={'disk':{'pressure':free<ret['min_free_mb']*1024**2,'free_bytes':free,'min_free_bytes':ret['min_free_mb']*1024**2},
+             'incident':{'pressure':size>ret['snapshot_budget_mb']*1024**2,'bytes':size,'budget_bytes':ret['snapshot_budget_mb']*1024**2},
+             'syslog':{**syslog_storage,'pressure':bool(syslog_storage.get('pressure',False))}}
     result = {'timestamp':iso(),'disk_free_bytes':free,'incident_bytes':size,
-              'pressure':free<ret['min_free_mb']*1024**2 or size>ret['snapshot_budget_mb']*1024**2 or syslog_storage.get('pressure',False),
+              'pressure':domains['disk']['pressure'] or domains['incident']['pressure'],
+              'domains':domains,
               'syslog':syslog_storage,
               'deleted':{k:v for k,v in deleted.items() if v}}
     atomic_json(root/'state/storage.json',result)

@@ -58,16 +58,19 @@ def write_errors(text):
 
 
 def listener_state(c,pid,text,available=True):
-    udp=tcp=None
-    if available:
-        endpoint=f"{c['syslog']['listen_address']}:{c['syslog']['port']}"
-        udp=tcp=False
-        for line in text.splitlines():
-            parts=line.split()
-            if len(parts)>4 and parts[4]==endpoint and f'pid={pid},' in line:
-                if parts[0]=='udp':udp=True
-                if parts[0]=='tcp':tcp=True
-    return udp,tcp
+    if not available or type(pid) is not int or pid<=0:return None,None
+    endpoint=f"{c['syslog']['listen_address']}:{c['syslog']['port']}"
+    states={'udp':False,'tcp':False}
+    for line in text.splitlines():
+        parts=line.split()
+        if not parts:continue
+        if len(parts)<6 or parts[0] not in states:
+            return None,None  # Unparseable output cannot establish listener absence or health.
+        if parts[4]==endpoint:
+            owners=re.findall(r'pid=(\d+)',line)
+            observed=(str(pid) in owners) if owners else None
+            if states[parts[0]] is not True:states[parts[0]]=observed
+    return states['udp'],states['tcp']
 
 
 def system_state(c,command):
@@ -77,7 +80,7 @@ def system_state(c,command):
     pid=int(props.get('MainPID','0') or '0')
     ident,started=process_identity(pid)
     ss=command(['ss','-H','-lnptu'],3,65536)
-    udp,tcp=listener_state(c,pid,ss['stdout'],ss['returncode']==0)
+    udp,tcp=listener_state(c,pid,ss['stdout'],ss['returncode']==0 and not ss.get('timeout') and not ss.get('stdout_truncated'))
     journal=command(['journalctl','-u','netblackbox-syslog.service',f'_PID={pid}','--since','2 minutes ago','-n','100','--no-pager','-o','json'],3,65536)
     errors=write_errors(journal['stdout']) if journal['returncode']==0 else None
     return {'write_error_messages':errors,'service_active':active,'process_id':pid,'process_identity':ident,
@@ -136,7 +139,9 @@ class SyslogObserver:
             p=self.root/'syslog'/ip
             if p.exists() and (not p.is_dir() or p.is_symlink()):paths_ok=False
         write_healthy=False if not paths_ok or write_error or receiver.get('write_error_messages') else True if action and receiver.get('service_active') else None
-        error=any(receiver.get(k) is False for k in ('service_active','udp_listening','tcp_listening')) or write_healthy is False
+        checks=[receiver.get(k) for k in ('service_active','udp_listening','tcp_listening')]+[write_healthy]
+        error=any(value is False for value in checks)
+        healthy=all(value is True for value in checks)
         source_states=self.state['sources']
         expected=set(self.c['syslog']['expected_sources'])
         ips=sorted(expected)+sorted((set(observed)|set(source_states))-expected)[:512-len(expected)]
@@ -168,7 +173,7 @@ class SyslogObserver:
         result={'receiver':{**receiver,'write_healthy':write_healthy,'write_failure_count':None,'action_failure_count':failed,
                             'write_failure_scope':'exact per-file write failures unavailable; action_failure_count is an incomplete action counter since receiver start',
                             'suspension_count':suspended,'stats_available':bool(stats),
-                            'state':'RECEIVER_ERROR' if error else 'HEALTHY' if write_healthy else 'UNKNOWN',
+                            'state':'RECEIVER_ERROR' if error else 'HEALTHY' if healthy else 'UNKNOWN',
                             'address':self.c['syslog']['listen_address'],'port':self.c['syslog']['port']},
                 'sources':sources,'storage':storage,'observed_at':dt.datetime.fromtimestamp(now,dt.timezone.utc).isoformat(),
                 'note':'SILENT is not DOWN. Local receiver health does not prove the LAN path or sender configuration.'}

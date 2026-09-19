@@ -14,7 +14,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'app'));sys.path.insert(0,str(ROOT/'scripts'))
 from config_tools import apply_defaults,validate,render
 import syslog_storage as storage
-from syslog_status import SyslogObserver
+from syslog_status import SyslogObserver,system_state,listener_state
 from verify_remote_syslog import check,new_id
 BASE=json.loads((ROOT/'config.example.json').read_text())
 NOW=dt.datetime(2026,8,31,tzinfo=dt.timezone.utc).timestamp()
@@ -125,6 +125,46 @@ class ObserverTests(unittest.TestCase):
         self.assertFalse(r['receiver']['write_healthy'])
         r=self.observer.sample(dict(self.receiver,process_identity='new-process'),NOW+301,self.stats(0))
         self.assertTrue(r['receiver']['write_healthy'])
+    def test_receiver_unknown_is_distinct_from_explicit_failure(self):
+        for key in ('service_active','udp_listening','tcp_listening'):
+            with self.subTest(check=key):
+                result=self.observer.sample(dict(self.receiver,**{key:None}),NOW,self.stats())
+                self.assertEqual(result['receiver']['state'],'UNKNOWN')
+                self.assertNotEqual(result['sources'][0]['state'],'RECEIVER_ERROR')
+        result=self.observer.sample(dict(self.receiver,udp_listening=None,tcp_listening=False),NOW,self.stats())
+        self.assertEqual(result['receiver']['state'],'RECEIVER_ERROR')
+        result=self.observer.sample(dict(self.receiver,udp_listening=None),NOW,self.stats(failed=1))
+        self.assertEqual(result['receiver']['state'],'RECEIVER_ERROR')
+    def test_ss_failure_timeout_truncation_and_unparseable_output(self):
+        endpoint=f"{self.c['syslog']['listen_address']}:{self.c['syslog']['port']}"
+        good=f'udp UNCONN 0 0 {endpoint} 0.0.0.0:* users:(("rsyslogd",pid=42,fd=7))\n'
+        good+=f'tcp LISTEN 0 5 {endpoint} 0.0.0.0:* users:(("rsyslogd",pid=42,fd=8))\n'
+        cases=[{'returncode':1,'stdout':'','stderr':'ss failed'},
+               {'returncode':-9,'stdout':good,'timeout':True},
+               {'returncode':0,'stdout':good,'timeout':True},
+               {'returncode':0,'stdout':good,'stdout_truncated':True},
+               {'returncode':0,'stdout':'unrecognized output'}]
+        for outcome in cases:
+            with self.subTest(outcome=outcome):
+                def command(argv,*args):
+                    if argv[0]=='systemctl':return {'returncode':0,'stdout':'ActiveState=active\nMainPID=42\n'}
+                    if argv[0]=='ss':return outcome
+                    return {'returncode':0,'stdout':''}
+                with patch('syslog_status.process_identity',return_value=('fixture:42',NOW-10)):
+                    state=system_state(self.c,command)
+                self.assertIsNone(state['udp_listening']);self.assertIsNone(state['tcp_listening'])
+                result=self.observer.sample(state,NOW,self.stats())
+                self.assertEqual(result['receiver']['state'],'UNKNOWN')
+        self.assertEqual(listener_state(self.c,42,good),(True,True))
+        self.assertEqual(listener_state(self.c,42,''),(False,False))
+    def test_listener_owner_unknown_cannot_report_healthy(self):
+        endpoint=f"{self.c['syslog']['listen_address']}:{self.c['syslog']['port']}"
+        output=f'udp UNCONN 0 0 {endpoint} 0.0.0.0:*\ntcp LISTEN 0 5 {endpoint} 0.0.0.0:*'
+        udp,tcp=listener_state(self.c,42,output)
+        self.assertEqual((udp,tcp),(None,None))
+        result=self.observer.sample(dict(self.receiver,udp_listening=udp,tcp_listening=tcp),NOW,self.stats())
+        self.assertEqual(result['receiver']['state'],'UNKNOWN')
+        self.assertEqual(listener_state(self.c,0,''),(None,None))
     def test_restart_retains_last_seen_and_resets_counter_scope(self):
         self.observer.sample(self.receiver,NOW-1,self.stats(0))
         self.observer.sample(self.receiver,NOW,self.stats(99))

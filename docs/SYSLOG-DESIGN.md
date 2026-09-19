@@ -16,13 +16,15 @@
 
 优先级：**保护系统继续工作 > 持续接收新日志；保留已收集的近期证据优先于腾空间继续接收。**
 
-- warning：剩余空间低于 `min_free_mb`（默认 1024 MiB）或受管理 syslog 达 `syslog_budget_mb` 的 80%（预算默认 1024 MiB）。产生 STORAGE_PRESSURE；暂停压缩与大 snapshot，继续轻量指标。
+- warning：剩余空间低于 `min_free_mb`（默认 1024 MiB）或受管理 syslog 达 `syslog_budget_mb` 的 80%（预算默认 1024 MiB）。产生带压力来源的 STORAGE_PRESSURE。Syslog 预警只影响自己的压缩/接收保护，不阻止 Incident 快照；只有实际磁盘余量不足或 incident 自身预算超限才跳过大 snapshot。
 - critical：剩余空间低于 `syslog_stop_free_mb`（默认 256 MiB）或 syslog 达预算。持久化暂停标记并停止 **netblackbox-syslog.service**，不停止 Agent、Docker 或网络，不删除保留期内日志。
 - 恢复：仅对维护器自行暂停的 receiver，在空闲超过 `min_free_mb+128 MiB` 且 syslog 小于预算 75% 时自动启动。管理员手动停止的服务不由维护器误启动。
 - 暂停状态在 `state/syslog-storage.json`，API `/syslog` 可见。ExecCondition 防止已标记的 receiver 因重启再次写满磁盘。空间完全耗尽导致标记写失败时仍执行 stop 并输出 STORAGE_PRESSURE 至 journal；清理空间后需检查标记/服务，必要时由管理员启动。
 - 维护器直接将压力变化写入 journald；Agent 会将采样到的压力变化写入 SQLite events。SQLite 无法写入时 API `/health` 为降级，主循环回滚未提交事务并重试，不伪称证据已保存。
 
 这是每 30 秒抽样控制，**不是文件系统硬配额**。突发流量可能在两次检查之间越过预算，其他软件也能耗尽磁盘；不能保证任何负载下绝不填盘。强容量隔离需单独文件系统/quota，并另行审批。目录统计超出 10 秒预算或不可读取时也保守暂停 receiver 并报告 inventory_complete=false，防止把未知占用当健康；此时需要检查磁盘权限/目录规模。接收暂停期间 UDP 会丢失、TCP 连接失败；这比静默删除最近证据更明确。syslog 预算仅统计管理范围内日志；exports、旧备份、其他程序空间由总空闲阈值保护，不自动删除。
+
+`state/storage.json.domains` 分别记录 `disk`、`incident`、`syslog`；SQLite state 分别持久化 `disk_storage_pressure`、`incident_storage_pressure`、`syslog_storage_pressure`，按域发出变化事件。兼容字段 `pressure/storage_pressure` 仅汇总 disk 与 incident，快照调度不再读取旧版含义不明的汇总标志，而是读取 incident 域与实时磁盘空闲量。已有误标为 skipped 的历史任务不会自动重写或重放；本次修复保护后续待执行任务。
 
 ## 3. 写入策略
 
@@ -43,7 +45,7 @@ HUP 用于重开已轮转的文件，不是重新解析全部配置，也不是�
 
 ## 4. 可观测性
 
-`GET /syslog` / `netblackbox syslog-status` 显示 receiver active、匹配 receiver PID 的 UDP/TCP listener、omfile failure/suspension 和本地写入错误状态。`write_healthy` 为观察到的本地输出状态，不是端到端/物理磁盘持久化证明；无数据时可为 null。
+`GET /syslog` / `netblackbox syslog-status` 显示 receiver active、匹配 receiver PID 的 UDP/TCP listener、omfile failure/suspension 和本地写入错误状态。`write_healthy` 为观察到的本地输出状态，不是端到端/物理磁盘持久化证明；无数据时可为 null。只有 service_active、UDP、TCP 与 write_healthy 全部明确为 true，receiver 才为 HEALTHY。任何明确 false 为 RECEIVER_ERROR；否则有未知项时为 UNKNOWN。`ss` 失败、超时、截断、输出不可解析或 PID 归属不可得不能证明健康，也不会单独冒充明确接收故障。
 
 impstats 每 10 秒输出到专属统计文件，读取最多 256 KiB 尾部，不每 10 秒递归扫描历史日志。统计文件以 1 MiB、2 份控制大小；它是遥测而非客户日志，不采用 30 天证据策略。source dynstats 最大 256 个活动计数器，86400 秒未使用可移除；字段明确标注 **receiver 进程/动态 counter 生存期的快照**，不是跨 reboot 精确累计计数。缺失/过期数据返回 null，不填假 0。write_failure_count 为 null（完整写入失败次数不可得）；action_failure_count 是不完整的 action failed 计数，不能当成所有 dynafile 写失败或丢失消息数量。另读取该 receiver PID 最近两分钟的有界 journal 错误，弥补某些 omfile 错误不增加计数的情况。明确写入错误会锁存，直到 rsyslog 报告 resumed 或 receiver 重启后重新建立观测；不会仅因两分钟错误窗口过去就自称恢复。
 
