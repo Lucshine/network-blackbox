@@ -22,7 +22,7 @@
 - 暂停状态在 `state/syslog-storage.json`，API `/syslog` 可见。ExecCondition 防止已标记的 receiver 因重启再次写满磁盘。空间完全耗尽导致标记写失败时仍执行 stop 并输出 STORAGE_PRESSURE 至 journal；清理空间后需检查标记/服务，必要时由管理员启动。
 - 维护器直接将压力变化写入 journald；Agent 会将采样到的压力变化写入 SQLite events。SQLite 无法写入时 API `/health` 为降级，主循环回滚未提交事务并重试，不伪称证据已保存。
 
-这是每 30 秒抽样控制，**不是文件系统硬配额**。突发流量可能在两次检查之间越过预算，其他软件也能耗尽磁盘；不能保证任何负载下绝不填盘。强容量隔离需单独文件系统/quota，并另行审批。接收暂停期间 UDP 会丢失、TCP 连接失败；这比静默删除最近证据更明确。syslog 预算仅统计管理范围内日志；exports、旧备份、其他程序空间由总空闲阈值保护，不自动删除。
+这是每 30 秒抽样控制，**不是文件系统硬配额**。突发流量可能在两次检查之间越过预算，其他软件也能耗尽磁盘；不能保证任何负载下绝不填盘。强容量隔离需单独文件系统/quota，并另行审批。目录统计超出 10 秒预算或不可读取时也保守暂停 receiver 并报告 inventory_complete=false，防止把未知占用当健康；此时需要检查磁盘权限/目录规模。接收暂停期间 UDP 会丢失、TCP 连接失败；这比静默删除最近证据更明确。syslog 预算仅统计管理范围内日志；exports、旧备份、其他程序空间由总空闲阈值保护，不自动删除。
 
 ## 3. 写入策略
 
@@ -45,7 +45,7 @@ HUP 用于重开已轮转的文件，不是重新解析全部配置，也不是�
 
 `GET /syslog` / `netblackbox syslog-status` 显示 receiver active、匹配 receiver PID 的 UDP/TCP listener、omfile failure/suspension 和本地写入错误状态。`write_healthy` 为观察到的本地输出状态，不是端到端/物理磁盘持久化证明；无数据时可为 null。
 
-impstats 每 10 秒输出到专属统计文件，读取最多 256 KiB 尾部，不每 10 秒递归扫描历史日志。统计文件以 1 MiB、2 份控制大小；它是遥测而非客户日志，不采用 30 天证据策略。source dynstats 最大 256 个活动计数器，86400 秒未使用可移除；字段明确标注 **receiver 进程/动态 counter 生存期的快照**，不是跨 reboot 精确累计计数。缺失/过期数据返回 null，不填假 0。write_failure_count 也是 action failed 计数，不等于丢失消息数量。
+impstats 每 10 秒输出到专属统计文件，读取最多 256 KiB 尾部，不每 10 秒递归扫描历史日志。统计文件以 1 MiB、2 份控制大小；它是遥测而非客户日志，不采用 30 天证据策略。source dynstats 最大 256 个活动计数器，86400 秒未使用可移除；字段明确标注 **receiver 进程/动态 counter 生存期的快照**，不是跨 reboot 精确累计计数。缺失/过期数据返回 null，不填假 0。write_failure_count 为 null（完整写入失败次数不可得）；action_failure_count 是不完整的 action failed 计数，不能当成所有 dynafile 写失败或丢失消息数量。另读取该 receiver PID 最近两分钟的有界 journal 错误，弥补某些 omfile 错误不增加计数的情况。
 
 可选 `expected_sources`，默认空数组。来源首次观测无证据为 UNKNOWN；计数变化时尝试读取当前/前一天文件最多各 64 KiB 的真实接收时间；若不能读到则使用统计变化的观测上界，并标明精度。不能因为启动后看见一个旧累计值就断言正在接收。跨 observer/receiver 重启保留 last seen 元数据但不把旧 counter 跨进程拼接为精确总数。统计容量限制/淘汰时标记计数范围，不影响原始日志接收。
 

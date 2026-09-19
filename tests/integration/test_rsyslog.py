@@ -144,6 +144,16 @@ class ReceiverIntegration(unittest.TestCase):
         with storage_lock(self.root):r=prune_archives(self.c,compress=False)
         self.assertEqual(r['deleted_files'],0)
         for marker in markers:self.assertEqual(check(self.root,'127.0.0.1',marker,level=1)['result'],'PASS')
+    def test_proc_fd_protects_archive_and_compression_preserves_it(self):
+        source=self.root/'syslog/127.0.0.1';source.mkdir(exist_ok=True)
+        archive=source/'2020-01-01.log-20200101-120000'
+        with archive.open('w') as f:
+            f.write('held open');f.flush()
+            self.assertIsNotNone(open_inodes())
+            with storage_lock(self.root):r=prune_archives(self.c)
+            self.assertTrue(archive.exists())
+        with storage_lock(self.root):r=prune_archives(self.c)
+        self.assertFalse(archive.exists());self.assertEqual(r['deleted_files'],1)
     def test_size_rotation_and_benchmark_both_write_modes(self):
         for mode in ('performance','durability'):
             if mode=='durability':

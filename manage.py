@@ -301,6 +301,8 @@ def install(args):
             if result['returncode']:raise RuntimeError('Generated configuration check failed: '+result['stderr'])
         changing=any(not Path(p).exists() or Path(p).read_text()!=text for p,(text,mode) in files.items())
         if changing:
+            tx.manifest['services_changed']=True
+            tx.persist()
             # Prevent old rotate-30 timer from running during replacement; snapshot original service states first.
             run(['systemctl','stop','netblackbox-logrotate.timer','netblackbox-logrotate.service'],timeout=100)
         changed=[]
@@ -331,7 +333,7 @@ def install(args):
         tx.manifest['phase']='complete';tx.persist()
         print(f'Installed. Backup/audit: {folder}\nNext: netblackbox status; netblackbox test\nConfigure router manually: {c["syslog"]["listen_address"]}:{c["syslog"]["port"]}/UDP')
     except BaseException:
-        if tx.manifest['files']:
+        if tx.manifest['files'] or tx.manifest.get('services_changed'):
             print('Installation failed; restoring application files/services...',file=sys.stderr)
             errors=restore_manifest(tx.manifest)
             tx.manifest['rollback_errors']=errors

@@ -133,7 +133,8 @@ class SyslogObserver:
         write_healthy=False if not paths_ok or write_error or receiver.get('write_error_messages') else True if action and receiver.get('service_active') else None
         error=any(receiver.get(k) is False for k in ('service_active','udp_listening','tcp_listening')) or write_healthy is False
         source_states=self.state['sources']
-        ips=sorted(set(self.c['syslog']['expected_sources'])|set(observed)|set(source_states))[:512]
+        expected=set(self.c['syslog']['expected_sources'])
+        ips=sorted(expected)+sorted((set(observed)|set(source_states))-expected)[:512-len(expected)]
         sources=[]
         for ip in ips:
             prior=source_states.get(ip,{})

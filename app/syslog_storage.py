@@ -51,22 +51,24 @@ def storage_lock(root, blocking=False):
         yield
 
 
-def source_dirs(root):
+def source_dirs(root,deadline=None):
     base = Path(root)/'syslog'
     if base.is_symlink(): raise ValueError('Symlink syslog root refused')
     if not base.exists(): return
     with os.scandir(base) as entries:
         for entry in entries:
+            if deadline and time.monotonic()>deadline:raise TimeoutError('Syslog inventory time budget exceeded')
             if not entry.is_dir(follow_symlinks=False): continue
             try: valid = str(ipaddress.IPv4Address(entry.name)) == entry.name
             except ValueError: valid = False
             if valid: yield Path(entry.path)
 
 
-def managed_files(root):
-    for directory in source_dirs(root):
+def managed_files(root,deadline=None):
+    for directory in source_dirs(root,deadline):
         with os.scandir(directory) as entries:
             for entry in entries:
+                if deadline and time.monotonic()>deadline:raise TimeoutError('Syslog inventory time budget exceeded')
                 match = NAME.fullmatch(entry.name)
                 if not match or not entry.is_file(follow_symlinks=False): continue
                 try: day = dt.date.fromisoformat(match[1])
@@ -148,7 +150,7 @@ def prune_archives(c, now=None, opened=None, compress=True, max_seconds=10):
 
 def inventory(root):
     total=active=archives=0
-    for item in managed_files(root):
+    for item in managed_files(root,time.monotonic()+10):
         total+=item['size']
         if item['archive']:archives+=item['size']
         else:active+=item['size']
@@ -176,12 +178,21 @@ def cycle(c, now=None, rotate=True, control=control_receiver, free_bytes=None):
     root=Path(c['data_dir']);path=root/'state/syslog-storage.json'
     with storage_lock(root):
         old=load(path,{})
-        summary=inventory(root)
+        try:summary=inventory(root)
+        except (OSError,TimeoutError) as e:
+            # Unknown occupancy cannot be treated as healthy. Preserve evidence and stop this writer.
+            failed={**old,'checked_at':now,'pressure':True,'paused_by_guard':True,'pause_confirmed':False,
+                    'pause_reason':'inventory unavailable: '+str(e),'inventory_complete':False}
+            try:atomic(path,failed)
+            finally:
+                print('STORAGE_PRESSURE '+json.dumps(failed),flush=True)
+                control('pause')
+            return failed
         free=shutil.disk_usage(root).free if free_bytes is None else free_bytes
         paused=bool(old.get('paused_by_guard'))
         decision=pressure_decision(c,summary['syslog_bytes'],free,paused)
         if paused and not old.get('pause_confirmed',True) and decision['action']!='resume':decision['action']='pause'
-        result={**summary,**decision,'checked_at':now,'free_bytes':free,'paused_by_guard':paused,
+        result={**summary,**decision,'checked_at':now,'free_bytes':free,'paused_by_guard':paused,'inventory_complete':True,
                 'last_rotation':old.get('last_rotation',0),'pause_reason':old.get('pause_reason'),
                 'pause_confirmed':old.get('pause_confirmed',False)}
         if decision['action']=='pause':

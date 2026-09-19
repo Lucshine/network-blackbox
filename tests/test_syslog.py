@@ -77,6 +77,17 @@ class RetentionTests(unittest.TestCase):
         self.assertEqual(actions,['pause'])
         r=storage.cycle(self.c,NOW+60,rotate=False,control=actions.append,free_bytes=3*1024**3)
         self.assertEqual(actions,['pause','resume']);self.assertFalse(r['pressure'])
+    def test_full_disk_marker_failure_still_stops_receiver(self):
+        actions=[]
+        with patch.object(storage,'atomic',side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                storage.cycle(self.c,NOW,rotate=False,control=actions.append,free_bytes=1)
+        self.assertEqual(actions,['pause'])
+    def test_inventory_failure_pauses_conservatively(self):
+        actions=[]
+        with patch.object(storage,'inventory',side_effect=TimeoutError('too many files')):
+            r=storage.cycle(self.c,NOW,rotate=False,control=actions.append)
+        self.assertTrue(r['pressure']);self.assertFalse(r['inventory_complete']);self.assertEqual(actions,['pause'])
     def test_budget_pressure_is_independent_of_free_space(self):
         d=storage.pressure_decision(self.c,self.c['retention']['syslog_budget_mb']*1024**2,10*1024**3)
         self.assertEqual(d['action'],'pause')
