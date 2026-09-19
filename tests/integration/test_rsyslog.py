@@ -21,8 +21,8 @@ import uuid
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'app'));sys.path.insert(0,str(ROOT/'scripts'))
 from config_tools import render
-from syslog_storage import storage_lock,prune_archives,open_inodes
-from syslog_status import SyslogObserver,stats_snapshot,process_identity,write_errors,listener_state
+from syslog_storage import storage_lock,prune_archives,open_inodes,cycle
+from syslog_status import SyslogObserver,stats_snapshot,process_identity,write_errors,listener_state,recent_file_time
 from verify_remote_syslog import new_id,send,check
 from benchmark_syslog import benchmark
 BASE=json.loads((ROOT/'config.example.json').read_text())
@@ -59,7 +59,7 @@ class ReceiverIntegration(unittest.TestCase):
         (self.root/'state/rsyslog/stats.log').unlink(missing_ok=True)
         r=subprocess.run(['rsyslogd','-N1','-f',str(self.config)],capture_output=True,text=True,timeout=15)
         self.assertEqual(r.returncode,0,r.stderr)
-        self.proc=subprocess.Popen(['rsyslogd','-n','-f',str(self.config),'-i',str(self.root/'pid')],stdout=self.log,stderr=self.log)
+        self.proc=subprocess.Popen(['rsyslogd','-n','-f',str(self.config),'-i',str(self.root/'pid')],stdout=self.log,stderr=self.log,env=getattr(self,'receiver_env',None))
         def listening():
             if self.proc.poll() is not None:
                 self.log.seek(0);raise AssertionError(self.log.read())
@@ -148,6 +148,41 @@ class ReceiverIntegration(unittest.TestCase):
         with storage_lock(self.root):r=prune_archives(self.c,compress=False)
         self.assertEqual(r['deleted_files'],0)
         for marker in markers:self.assertEqual(check(self.root,'127.0.0.1',marker,level=1)['result'],'PASS')
+    def test_actual_receive_time_local_date_and_offset(self):
+        from zoneinfo import ZoneInfo
+        old_tz=os.environ.get('TZ')
+        try:
+            for zone in ('UTC','Asia/Shanghai'):
+                self.proc.terminate();self.proc.wait(timeout=10)
+                os.environ['TZ']=zone;time.tzset();self.receiver_env={**os.environ,'TZ':zone}
+                self.start()
+                stamp_before=time.time()
+                text='<14>1 2001-01-01T00:00:00Z fixture app - - - timezone-real-message'
+                with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as s:s.sendto(text.encode(),('127.0.0.1',self.port))
+                wait_for(lambda:recent_file_time(self.root,'127.0.0.1',time.time()) is not None and
+                         dt.datetime.fromisoformat(recent_file_time(self.root,'127.0.0.1',time.time())).timestamp()>=stamp_before)
+                received=dt.datetime.fromisoformat(recent_file_time(self.root,'127.0.0.1',time.time()))
+                self.assertEqual(received.utcoffset(),dt.datetime.now(ZoneInfo(zone)).utcoffset())
+                self.assertTrue((self.root/'syslog/127.0.0.1'/f'{received.date()}.log').exists())
+                self.assertGreater(received.year,2001)  # receive timestamp, not the sender header
+        finally:
+            if old_tz is None:os.environ.pop('TZ',None)
+            else:os.environ['TZ']=old_tz
+            time.tzset()
+    def test_actual_receiver_pause_expiry_recovery_and_receipt(self):
+        self.emit('udp')
+        archive=self.root/'syslog/127.0.0.1/2020-01-01.log-20200101-120000'
+        with archive.open('wb') as f:f.truncate(33*1024**2)
+        self.c['retention']['syslog_budget_mb']=32
+        actions=[]
+        def actual_control(action):
+            actions.append(action)
+            if action=='pause':self.proc.terminate();self.proc.wait(timeout=10)
+            else:self.start()
+        result=cycle(self.c,rotate=False,free_bytes=4*1024**3,control=actual_control,receiver_running=self.proc.poll() is None)
+        self.assertEqual(actions,['pause','resume']);self.assertFalse(result['paused_by_guard'])
+        self.assertFalse(archive.exists())
+        self.emit('udp');self.emit('tcp')
     def test_proc_fd_protects_archive_and_compression_preserves_it(self):
         source=self.root/'syslog/127.0.0.1';source.mkdir(exist_ok=True)
         archive=source/'2020-01-01.log-20200101-120000'

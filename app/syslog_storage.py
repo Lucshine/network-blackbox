@@ -17,6 +17,7 @@ import stat
 import subprocess
 import time
 import uuid
+from log_time import receive_day
 
 NAME = re.compile(r'^(\d{4}-\d{2}-\d{2})\.log(?:(?:-(\d{8})(?:-(\d{6}))?|\.(\d+))(\.gz)?)?$')
 
@@ -123,7 +124,7 @@ def clean_compression_temps(root,opened,deadline):
 def prune_archives(c, now=None, opened=None, compress=True, max_seconds=10):
     """Caller MUST hold storage_lock. No mtime-based date decisions, no recent eviction."""
     now = time.time() if now is None else now
-    cutoff = dt.datetime.fromtimestamp(now,dt.timezone.utc).date()-dt.timedelta(days=c['retention']['syslog_days']+1)
+    cutoff = receive_day(now)-dt.timedelta(days=c['retention']['syslog_days']+1)
     # Extra day avoids early deletion across local timezone boundaries in old files.
     opened = open_inodes() if opened is None else opened
     result={'deleted_files':0,'deleted_bytes':0,'compressed_files':0,'open_file_scan_complete':opened is not None}
@@ -137,7 +138,7 @@ def prune_archives(c, now=None, opened=None, compress=True, max_seconds=10):
         if item['day'] < cutoff:
             p.unlink();result['deleted_files']+=1;result['deleted_bytes']+=item['size'];continue
         # Do not compress today's archives (observer can drain rotated files); no arbitrary gzip paths.
-        if not compress or p.suffix=='.gz' or item['day']>=dt.datetime.fromtimestamp(now,dt.timezone.utc).date()-dt.timedelta(days=1):continue
+        if not compress or p.suffix=='.gz' or item['day']>=receive_day(now)-dt.timedelta(days=1):continue
         dest=p.with_name(p.name+'.gz')
         if dest.exists():continue
         if shutil.disk_usage(c['data_dir']).free < c['retention']['min_free_mb']*1024**2 + item['size']:continue
@@ -182,72 +183,121 @@ def pressure_decision(c, usage, free, paused=False):
             'action':'pause' if critical and not paused else 'resume' if paused and recovered else 'none'}
 
 
+def load_guard(root):
+    """A corrupt pause marker is not equivalent to an unpaused receiver."""
+    path=Path(root)/'state/syslog-storage.json'
+    if not path.exists():return {}
+    if path.is_symlink():raise ValueError('Symlink guard marker refused')
+    data=json.loads(path.read_text())
+    if not isinstance(data,dict):raise ValueError('Guard marker must be an object')
+    for key in ('paused_by_guard','pause_confirmed','resume_pending'):
+        if key in data and type(data[key]) is not bool:raise ValueError('Invalid guard flag: '+key)
+    for key in ('last_rotation','resume_retry_after'):
+        if key in data and (type(data[key]) not in (float,int) or data[key]<0):raise ValueError('Invalid guard time: '+key)
+    return data
+
+
+def receiver_active():
+    r=subprocess.run(['systemctl','show','netblackbox-syslog.service','--property=ActiveState','--value'],capture_output=True,text=True,timeout=5)
+    state=r.stdout.strip()
+    if r.returncode or state not in ('active','inactive','failed'):
+        raise RuntimeError('Receiver state unknown; refusing ownership/automatic recovery decisions')
+    return state=='active'
+
+
 def control_receiver(action):
     verb={'pause':'stop','resume':'start'}[action]
-    result=subprocess.run(['systemctl',verb,'netblackbox-syslog.service'],capture_output=True,text=True,timeout=20)
+    result=subprocess.run(['systemctl',verb,'netblackbox-syslog.service'],capture_output=True,text=True,timeout=30)
     if result.returncode:raise RuntimeError('Receiver control failed: '+result.stderr)
+    if receiver_active() != (action=='resume'):raise RuntimeError('Receiver did not reach requested state')
 
 
-def cycle(c, now=None, rotate=True, control=control_receiver, free_bytes=None):
-    """Root oneshot runs independently from Agent; one writer for all syslog maintenance."""
+def assess_capacity(c,free_bytes=None):
+    usage=inventory(c['data_dir'])
+    free=shutil.disk_usage(c['data_dir']).free if free_bytes is None else free_bytes
+    if free<c['retention']['syslog_stop_free_mb']*1024**2 or usage['syslog_bytes']>=c['retention']['syslog_budget_mb']*1024**2:
+        raise RuntimeError('Receiver start blocked by disk reserve or Syslog budget')
+    return {**usage,'free_bytes':free}
+
+
+def cycle(c, now=None, rotate=True, control=control_receiver, free_bytes=None, receiver_running=None):
+    """Single lifecycle writer. `receiver_running` is injectable only for isolated tests."""
     now=time.time() if now is None else now
     root=Path(c['data_dir']);path=root/'state/syslog-storage.json'
+    fault=root/'state/syslog-storage-error.json'
     with storage_lock(root):
-        old=load(path,{})
-        try:summary=inventory(root)
-        except (OSError,TimeoutError) as e:
-            # Unknown occupancy cannot be treated as healthy. Preserve evidence and stop this writer.
-            failed={**old,'checked_at':now,'pressure':True,'paused_by_guard':True,'pause_confirmed':False,
-                    'pause_reason':'inventory unavailable: '+str(e),'inventory_complete':False}
-            try:atomic(path,failed)
+        # During a staged installation validate the real guard without deleting any evidence.
+        if (root/'state/upgrade-in-progress.json').exists():
+            old=load_guard(root)
+            if fault.exists() or old.get('paused_by_guard') or old.get('resume_pending'):
+                raise RuntimeError('Storage guard needs recovery before upgrade')
+            return {**assess_capacity(c,free_bytes),'upgrade_validation_only':True}
+        running=receiver_active() if receiver_running is None else receiver_running
+        try:
+            if fault.exists():raise ValueError('Unresolved guard error; inspect syslog-storage-error.json and use --clear-error')
+            old=load_guard(root)
+            summary=inventory(root)
+        except (OSError,ValueError) as e:
+            result={'checked_at':now,'pressure':True,'requires_manual_intervention':True,
+                    'error':str(e),'inventory_complete':False,'action':'pause' if running else 'none'}
+            try:atomic(fault,result)
             finally:
-                print('STORAGE_PRESSURE '+json.dumps(failed),flush=True)
-                control('pause')
-            return failed
+                print('STORAGE_PRESSURE '+json.dumps(result),flush=True)
+                if running:control('pause')
+            return result
         free=shutil.disk_usage(root).free if free_bytes is None else free_bytes
-        paused=bool(old.get('paused_by_guard'))
-        decision=pressure_decision(c,summary['syslog_bytes'],free,paused)
-        if paused and not old.get('pause_confirmed',True) and decision['action']!='resume':decision['action']='pause'
-        result={**summary,**decision,'checked_at':now,'free_bytes':free,'paused_by_guard':paused,'inventory_complete':True,
-                'last_rotation':old.get('last_rotation',0),'pause_reason':old.get('pause_reason'),
-                'pause_confirmed':old.get('pause_confirmed',False)}
-        if decision['action']=='pause':
-            # Persist intent first; a crash after stop is recoverable. Service ExecCondition consults marker.
-            result.update(paused_by_guard=True,pause_confirmed=False,pause_reason='disk reserve or syslog budget exhausted')
+        owned=bool(old.get('paused_by_guard') or old.get('resume_pending'))
+        decision=pressure_decision(c,summary['syslog_bytes'],free,owned)
+        result={**summary,**decision,'checked_at':now,'free_bytes':free,'inventory_complete':True,
+                'paused_by_guard':owned,'pause_confirmed':old.get('pause_confirmed',False),
+                'resume_pending':False,'resume_retry_after':old.get('resume_retry_after',0),
+                'last_rotation':old.get('last_rotation',0),'pause_reason':old.get('pause_reason')}
+        if decision['action']=='pause' or (owned and running and decision['pressure']):
+            # Do not take ownership of a service that an administrator already stopped.
+            result.update(paused_by_guard=owned or running,pause_confirmed=False,
+                          pause_reason='disk reserve or syslog budget exhausted',action='pause' if running else 'none',
+                          requires_manual_start=not owned and not running)
             try:atomic(path,result)
             finally:
-                # Even if the disk cannot save the marker, stop the writer and log via journald.
                 print('STORAGE_PRESSURE '+json.dumps(result),flush=True)
-                control('pause')
-                result['pause_confirmed']=True
-        elif decision['action']=='resume':
-            result.update(paused_by_guard=False,pause_confirmed=False,pause_reason=None)
-            atomic(path,result)
-            try:control('resume')
-            except Exception:
-                result['paused_by_guard']=True;atomic(path,result);raise
+                if running:control('pause')
+            result['pause_confirmed']=True
+        # First prune closed expired archives; a successful prune can recover in this same cycle.
         if rotate and now-result['last_rotation']>=300:
-            # Materialize only owned canonical files. Never hand arbitrary source filenames to logrotate.
             template=Path('/etc/netblackbox/logrotate.conf').read_text()
             pattern=str(root)+'/syslog/*/*.log'
             if pattern not in template:raise ValueError('Unrecognized logrotate template; refusing rotation')
-            owned=['"'+str(item['path'])+'"' for item in managed_files(root) if not item['archive']]
-            if owned:
-                template=template.replace(pattern,' '.join(owned),1)
-            else:
-                # First stanza ends before the fixed statistics file stanza.
-                template=template[template.index(str(root)+'/state/rsyslog/stats.log'):]
+            owned_files=['"'+str(item['path'])+'"' for item in managed_files(root) if not item['archive']]
+            template=template.replace(pattern,' '.join(owned_files),1) if owned_files else template[template.index(str(root)+'/state/rsyslog/stats.log'):]
             runtime=root/'state/logrotate-runtime.conf'
             try:
                 with runtime.open('w') as f:f.write(template)
                 os.chmod(runtime,0o600)
-                argv=['logrotate','--state',str(root/'state/logrotate.status'),str(runtime)]
-                r=subprocess.run(argv,capture_output=True,text=True,timeout=20)
+                r=subprocess.run(['logrotate','--state',str(root/'state/logrotate.status'),str(runtime)],capture_output=True,text=True,timeout=20)
             finally:runtime.unlink(missing_ok=True)
             if r.returncode:result['rotation_error']=r.stderr[-4096:]
             else:result['last_rotation']=now
         result['retention']=prune_archives(c,now,compress=not result['pressure'])
         result.update(inventory(root))
+        free=shutil.disk_usage(root).free if free_bytes is None else free_bytes
+        after=pressure_decision(c,result['syslog_bytes'],free,result['paused_by_guard'])
+        result.update(pressure=after['pressure'],free_bytes=free)
+        if result['paused_by_guard'] and after['action']=='resume' and now>=result['resume_retry_after']:
+            # Persist a retryable resume intent before clearing the ExecCondition pause flag.
+            result.update(paused_by_guard=False,resume_pending=True,pause_confirmed=False,action='resume')
+            atomic(path,result)
+            try:control('resume')
+            except Exception as e:
+                result.update(paused_by_guard=True,resume_pending=False,pressure=True,
+                              resume_retry_after=now+300,recovery_error=str(e),requires_manual_intervention=True)
+                atomic(path,result)
+                print('STORAGE_PRESSURE '+json.dumps(result),flush=True)
+                return result
+            result.update(resume_pending=False,pause_reason=None,resume_retry_after=0)
+        if result['paused_by_guard']:
+            result['pressure']=True
+        if result['paused_by_guard'] and not result['retention']['open_file_scan_complete']:
+            result['recovery_wait_reason']='Cannot inspect open descriptors; retention deferred. Administrator must check /proc access.'
         atomic(path,result)
         if result['pressure'] != old.get('pressure',False):
             print(('STORAGE_PRESSURE' if result['pressure'] else 'STORAGE_RECOVER')+' '+json.dumps(result),flush=True)
@@ -259,12 +309,21 @@ def main():
     from config_tools import validate
     parser=argparse.ArgumentParser();parser.add_argument('--config',default='/etc/netblackbox/config.json')
     parser.add_argument('--receiver-allowed',action='store_true')
+    parser.add_argument('--clear-error',action='store_true',help='After repair: validate safe capacity, clear manual-intervention alarm; does not start receiver')
     a=parser.parse_args();c=validate(json.loads(Path(a.config).read_text()))
+    root=Path(c['data_dir'])
+    if a.clear_error:
+        with storage_lock(root):
+            load_guard(root);usage=assess_capacity(c)
+            if not pressure_decision(c,usage['syslog_bytes'],usage['free_bytes'],True)['action']=='resume':
+                raise RuntimeError('Recovery thresholds not met')
+            (root/'state/syslog-storage-error.json').unlink(missing_ok=True)
+        print('Guard error cleared after validation. Receiver was not started.');return 0
     if a.receiver_allowed:
-        root=Path(c['data_dir']);state=load(root/'state/syslog-storage.json',{})
-        free=shutil.disk_usage(root).free
-        # Check cheap hard reserve at receiver start, even if guard has not run yet.
-        if state.get('paused_by_guard') or free<c['retention']['syslog_stop_free_mb']*1024**2:return 1
+        if (root/'state/syslog-storage-error.json').exists():return 1
+        try:state=load_guard(root);assess_capacity(c)
+        except (OSError,ValueError,RuntimeError):return 1
+        if state.get('paused_by_guard'):return 1
         # A fresh receiver process has fresh counters. Do not mix old impstats snapshots into its scope.
         stats=root/'state/rsyslog/stats.log'
         if stats.is_symlink():raise ValueError('Symlink statistics file refused')

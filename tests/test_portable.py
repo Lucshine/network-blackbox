@@ -139,6 +139,8 @@ class CapacityPreflightTests(unittest.TestCase):
         self.stack.enter_context(patch.object(m,'CONFIG',self.current))
         self.stack.enter_context(patch.object(m,'STATE',self.state))
         self.stack.enter_context(patch.object(m,'environment'))
+        self.stack.enter_context(patch.object(m,'validate_installed_manifest'))
+        self.stack.enter_context(patch.object(m,'deployment_lock',side_effect=contextlib.nullcontext))
         self.stack.enter_context(patch.object(m.shutil,'disk_usage',return_value=SimpleNamespace(free=8*1024**3)))
         self.packages=self.stack.enter_context(patch.object(m,'package_state',return_value={}))
         self.stack.enter_context(patch.object(m,'unit_state',return_value={}))
@@ -210,7 +212,7 @@ class InstallationFlowTests(unittest.TestCase):
                 failure=fail_verify and len(argv)>1 and argv[1]==str(ROOT/'verify.py')
                 return {'argv':argv,'returncode':1 if failure else 0,'stdout':'simulated verification failure' if failure else '{}','stderr':''}
             content='new' if fail_verify else 'old'
-            with patch.object(m,'STATE',statefile), patch.object(m,'selected_config',return_value=c), patch.object(m,'preflight',return_value=info), patch.object(m,'payload',return_value={str(target):(content,0o600)}), patch.object(m,'audit'), patch.object(m,'package_state',return_value={}), patch.object(m,'run',side_effect=fake_run), patch.object(m,'ALLOWED',{str(target),str(statefile)}):
+            with patch.object(m,'deployment_lock',side_effect=contextlib.nullcontext), patch.object(m,'STATE',statefile), patch.object(m,'selected_config',return_value=c), patch.object(m,'preflight',return_value=info), patch.object(m,'payload',return_value={str(target):(content,0o600)}), patch.object(m,'audit'), patch.object(m,'package_state',return_value={}), patch.object(m,'run',side_effect=fake_run), patch.object(m,'ALLOWED',{str(target),str(statefile)}):
                 if fail_verify:
                     with self.assertRaisesRegex(RuntimeError,'verification failed'):
                         m.install(SimpleNamespace(check=False,offline=True))

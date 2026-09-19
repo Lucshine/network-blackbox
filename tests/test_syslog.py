@@ -24,7 +24,8 @@ class RetentionTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
         self.c=copy.deepcopy(BASE);self.c['data_dir']=str(self.root)
         self.src=self.root/'syslog/192.0.2.1';self.src.mkdir(parents=True)
-    def tearDown(self):self.tmp.cleanup()
+        self.active_patch=patch.object(storage,'receiver_active',return_value=True);self.active_patch.start()
+    def tearDown(self):self.active_patch.stop();self.tmp.cleanup()
     def file(self,name,gz=False):
         p=self.src/name
         if gz:
@@ -73,9 +74,9 @@ class RetentionTests(unittest.TestCase):
         p=self.file('2026-08-29.log-20260829-120000.gz',True);actions=[]
         r=storage.cycle(self.c,NOW,rotate=False,control=actions.append,free_bytes=32*1024**2)
         self.assertTrue(r['pressure']);self.assertEqual(actions,['pause']);self.assertTrue(p.exists())
-        r=storage.cycle(self.c,NOW+30,rotate=False,control=actions.append,free_bytes=32*1024**2)
+        r=storage.cycle(self.c,NOW+30,rotate=False,control=actions.append,free_bytes=32*1024**2,receiver_running=False)
         self.assertEqual(actions,['pause'])
-        r=storage.cycle(self.c,NOW+60,rotate=False,control=actions.append,free_bytes=3*1024**3)
+        r=storage.cycle(self.c,NOW+60,rotate=False,control=actions.append,free_bytes=3*1024**3,receiver_running=False)
         self.assertEqual(actions,['pause','resume']);self.assertFalse(r['pressure'])
     def test_full_disk_marker_failure_still_stops_receiver(self):
         actions=[]

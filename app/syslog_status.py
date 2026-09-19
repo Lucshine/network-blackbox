@@ -10,6 +10,7 @@ import re
 import socket
 import time
 from syslog_storage import atomic,load
+from log_time import receive_day
 
 
 def tail(path,limit=262144):
@@ -90,7 +91,7 @@ def system_state(c,command):
 def recent_file_time(root,ip,now):
     """Bounded lookup of receive timestamps, only on counter changes; never scan archives."""
     latest=None
-    today=dt.datetime.fromtimestamp(now,dt.timezone.utc).date()
+    today=receive_day(now)
     for offset in (0,1):
         path=Path(root)/'syslog'/ip/f'{today-dt.timedelta(days=offset)}.log'
         if path.is_symlink() or path.parent.is_symlink():continue
@@ -170,6 +171,8 @@ class SyslogObserver:
                             'timestamp_precision':precision,'state':state})
         self.state={'version':1,'process_identity':epoch,'sources':{ip:source_states[ip] for ip in ips},'action':action,'write_error':write_error}
         storage=load(self.root/'state/syslog-storage.json',{})
+        fault=load(self.root/'state/syslog-storage-error.json',None)
+        if fault:storage={**storage,'guard_error':fault,'requires_manual_intervention':True,'pressure':True}
         result={'receiver':{**receiver,'write_healthy':write_healthy,'write_failure_count':None,'action_failure_count':failed,
                             'write_failure_scope':'exact per-file write failures unavailable; action_failure_count is an incomplete action counter since receiver start',
                             'suspension_count':suspended,'stats_available':bool(stats),

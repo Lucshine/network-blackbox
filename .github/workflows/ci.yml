@@ -21,7 +21,7 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            python3 git ca-certificates rsyslog logrotate systemd iproute2 procps
+            python3 git ca-certificates rsyslog logrotate systemd iproute2 procps tzdata
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
@@ -33,6 +33,9 @@ jobs:
           python3 tests/test_agent.py
           python3 -m unittest discover -s tests -p 'test_portable.py' -v
           python3 -m unittest discover -s tests -p 'test_syslog.py' -v
+          python3 -m unittest discover -s tests -p 'test_timezones.py' -v
+          python3 -m unittest discover -s tests -p 'test_guard_recovery.py' -v
+          python3 -m unittest discover -s tests -p 'test_upgrade.py' -v
           sh -n install.sh
           sh -n uninstall.sh
       - name: Real rsyslog integration (isolated container)

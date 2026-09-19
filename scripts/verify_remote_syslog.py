@@ -45,7 +45,7 @@ def send(target,port,protocol,marker,count=1,length=128,delay=0):
 def check(root,source,marker,count=1,since=None,level=2,target=None,max_bytes=64*1024**2,max_files=1024):
     ipaddress.IPv4Address(source)
     if not MARKER.fullmatch(marker):raise ValueError('Invalid test ID')
-    since=since or dt.datetime.now(dt.timezone.utc).date().isoformat()
+    since=since or dt.datetime.now().date().isoformat()
     dt.date.fromisoformat(since)
     if count<1 or count>100000:raise ValueError('Invalid expected count')
     directory=Path(root)/'syslog'/source
