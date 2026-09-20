@@ -47,7 +47,9 @@
     "syslog_maxsize_mb": 16,
     "syslog_rotate": 30,
     "journal_max_use_mb": 256,
-    "journal_days": 30
+    "journal_days": 30,
+    "syslog_budget_mb": 1024,
+    "syslog_stop_free_mb": 256
   },
   "api": {
     "host": "127.0.0.1",
@@ -71,7 +73,10 @@
     "port": 5514,
     "allowed_networks": [
       "192.0.2.0/24"
-    ]
+    ],
+    "write_mode": "performance",
+    "expected_sources": [],
+    "silent_seconds": 300
   },
   "journald": {
     "configure_persistent": true

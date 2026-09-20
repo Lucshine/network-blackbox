@@ -1,0 +1,48 @@
+name: Debian VM lifecycle
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/v1.2-syslog-reliability]
+    paths:
+      - 'tests/vm/**'
+      - '.github/workflows/vm-lifecycle.yml'
+      - 'app/**'
+      - 'manage.py'
+      - 'verify.py'
+permissions:
+  contents: read
+jobs:
+  systemd-vm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install isolated VM tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils
+      - name: Real systemd upgrade, automatic rollback, and reboot
+        run: |
+          sudo git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          sudo --preserve-env=PATH bash tests/vm/run.sh
+      - name: Show result summaries
+        if: always()
+        run: |
+          if test -f dist/vm-results/reports.tar.gz; then
+            mkdir -p dist/vm-results/extracted
+            tar -xzf dist/vm-results/reports.tar.gz -C dist/vm-results/extracted
+            for f in dist/vm-results/extracted/reports/*.json; do echo "$f"; cat "$f"; done
+            for f in dist/vm-results/extracted/logs/*.log; do echo "$f"; tail -80 "$f"; done
+          else
+            tail -100 dist/vm-results/serial.log || true
+          fi
+      - name: Preserve VM evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: debian-systemd-vm-${{ github.sha }}
+          path: dist/vm-results/
+          retention-days: 14

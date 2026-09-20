@@ -9,9 +9,9 @@ import tarfile
 root=Path(__file__).resolve().parents[1]
 version=(root/'VERSION').read_text().strip()
 files=['VERSION','README.md','LICENSE','CONTRIBUTING.md','config.example.json','manage.py','verify.py','install.sh','uninstall.sh',
-       'app/netblackbox.py','app/config_tools.py','app/simulate_failure.py','app/agent.service.in',
-       'tests/test_agent.py','tests/test_portable.py',
-       'docs/CONFIGURATION.md','docs/OPERATIONS.md','docs/IMMORTALWRT.md','docs/PVE.md']
+       'app/netblackbox.py','app/config_tools.py','app/syslog_storage.py','app/syslog_status.py','app/log_time.py','app/simulate_failure.py','app/agent.service.in',
+       'scripts/verify_remote_syslog.py','scripts/benchmark_syslog.py','tests/test_syslog.py','tests/test_timezones.py','tests/test_guard_recovery.py','tests/test_upgrade.py','tests/integration/test_rsyslog.py','tests/test_agent.py','tests/test_portable.py',
+       'docs/CONFIGURATION.md','docs/OPERATIONS.md','docs/IMMORTALWRT.md','docs/PVE.md','docs/SYSLOG-DESIGN.md','docs/SYSLOG-ACCEPTANCE.md','docs/UPGRADE-v1.2.md','docs/PVE-ROADMAP.md','docs/V1.2-REPORT.md','docs/PR1-REVIEW-FIXES.md','docs/FINAL-SAFETY-REVIEW.md']
 release=root/'dist';release.mkdir(exist_ok=True)
 archive=release/f'netblackbox-{version}.tar.gz'
 with archive.open('wb') as raw:

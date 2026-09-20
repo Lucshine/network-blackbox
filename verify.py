@@ -35,8 +35,8 @@ def verify(config_path,network=False):
         before=db.execute('SELECT max(id) FROM metrics').fetchone()[0]
         time.sleep(c['probe_interval_seconds']+2)
         after=db.execute('SELECT max(id) FROM metrics').fetchone()[0]
-        check('sqlite_continues_writing',after>before)
-    target=(c['syslog']['listen_address'],c['syslog']['port']);marker='NETBLACKBOX_VERIFY_'+uuid.uuid4().hex
+        check('sqlite_continues_writing',after is not None and (before is None or after>before))
+    target=(c['syslog']['listen_address'],c['syslog']['port']);marker='NETBLACKBOX_TEST_'+uuid.uuid4().hex
     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
     msg=f'<14>1 {timestamp} deployment-test netblackbox - - - {marker}'
     for kind,label in [(socket.SOCK_DGRAM,'UDP'),(socket.SOCK_STREAM,'TCP')]:
@@ -54,9 +54,14 @@ def verify(config_path,network=False):
     if network:
         r=subprocess.run(['/usr/local/bin/netblackbox','--config',config_path,'test'],capture_output=True,text=True,timeout=45)
         details['network_probes']=json.loads(r.stdout);check('network_probes',r.returncode==0)
-    out={'timestamp':timestamp,'checks':checks,'details':details}
+    out={'timestamp':timestamp,'level':1,'result':'PASS' if all(checks.values()) else 'FAIL',
+         'level_2':'NOT_TESTED','level_3':'NOT_TESTED','checks':checks,'details':details}
     print(json.dumps(out,indent=2));return 0 if all(checks.values()) else 1
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--config',default='/etc/netblackbox/config.json');p.add_argument('--network',action='store_true');a=p.parse_args()
-    raise SystemExit(verify(a.config,a.network))
+    try:result=verify(a.config,a.network)
+    except Exception as e:
+        print(json.dumps({'level':1,'result':'FAIL','error':str(e),'level_2':'NOT_TESTED','level_3':'NOT_TESTED'},indent=2))
+        result=1
+    raise SystemExit(result)

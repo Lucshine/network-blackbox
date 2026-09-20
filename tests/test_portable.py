@@ -1,4 +1,6 @@
 import copy
+import contextlib
+import gzip
 import importlib.util
 import ipaddress
 import json
@@ -124,6 +126,76 @@ class ConfigTests(unittest.TestCase):
             p=Path(td).resolve();(p/'real').mkdir();(p/'link').symlink_to(p/'real',target_is_directory=True)
             with self.assertRaises(RuntimeError):m.ensure_safe_path(p/'link'/'file')
 
+class CapacityPreflightTests(unittest.TestCase):
+    def setUp(self):
+        from types import SimpleNamespace
+        self.tmp=tempfile.TemporaryDirectory()
+        self.root=Path(self.tmp.name).resolve()
+        self.c=copy.deepcopy(BASE);self.c['data_dir']=str(self.root/'data');self.c['retention']['syslog_budget_mb']=32
+        self.source=self.root/'data/syslog/192.0.2.1';self.source.mkdir(parents=True)
+        self.current=self.root/'current.json';self.current.write_text(json.dumps(self.c))
+        self.state=self.root/'installed.json';self.state.write_text(json.dumps({'manager':'netblackbox-portable','files':{}}))
+        self.stack=contextlib.ExitStack()
+        self.stack.enter_context(patch.object(m,'CONFIG',self.current))
+        self.stack.enter_context(patch.object(m,'STATE',self.state))
+        self.stack.enter_context(patch.object(m,'environment'))
+        self.stack.enter_context(patch.object(m,'validate_installed_manifest'))
+        self.stack.enter_context(patch.object(m,'deployment_lock',side_effect=contextlib.nullcontext))
+        self.stack.enter_context(patch.object(m.shutil,'disk_usage',return_value=SimpleNamespace(free=8*1024**3)))
+        self.packages=self.stack.enter_context(patch.object(m,'package_state',return_value={}))
+        self.stack.enter_context(patch.object(m,'unit_state',return_value={}))
+        self.stack.enter_context(patch.object(m,'port_free'))
+    def tearDown(self):
+        self.stack.close();self.tmp.cleanup()
+    def sparse(self,name,size):
+        p=self.source/name
+        with p.open('wb') as f:f.truncate(size)
+        return p
+    def fingerprint(self):
+        return {str(p.relative_to(self.root)):(p.stat().st_size,p.stat().st_mtime_ns) for p in self.root.rglob('*') if p.is_file()}
+    def test_over_budget_blocks_install_before_changes_preserving_evidence(self):
+        from types import SimpleNamespace
+        self.sparse('2026-09-01.log',32*1024**2+1)
+        archive=self.source/'2026-08-31.log-20260831-120000.gz'
+        with gzip.open(archive,'wb') as f:f.write(b'historical evidence')
+        before=self.fingerprint()
+        with patch.object(m,'selected_config',return_value=self.c),patch.object(m,'payload',return_value={}),patch.object(m,'run') as run,patch.object(m,'Transaction') as tx,patch.object(m,'audit') as audit:
+            with self.assertRaisesRegex(RuntimeError,'Increase retention.syslog_budget_mb') as failure:
+                m.install(SimpleNamespace(check=False,offline=False))
+            run.assert_not_called();tx.assert_not_called();audit.assert_not_called()
+        self.assertIn('No historical logs',str(failure.exception));self.packages.assert_not_called()
+        self.assertEqual(before,self.fingerprint())
+        self.assertFalse((self.root/'data/state').exists())
+        with gzip.open(archive,'rb') as f:self.assertEqual(f.read(),b'historical evidence')
+    def test_exact_budget_also_blocks_before_guard_would_pause(self):
+        self.sparse('2026-09-01.log',32*1024**2)
+        with self.assertRaisesRegex(RuntimeError,'reaches/exceeds'):m.preflight(self.c,{})
+    def test_85_percent_budget_passes_and_reports_all_managed_bytes(self):
+        self.sparse('2026-09-01.log',int(32*1024**2*0.85))
+        self.sparse('2026-08-31.log-20260831-120000',128)
+        archive=self.source/'2026-08-30.log-20260830-120000.gz'
+        with gzip.open(archive,'wb') as f:f.write(b'historical evidence')
+        ignored=self.sparse('unrelated.bin',32*1024**2)
+        before=self.fingerprint()
+        r=m.preflight(self.c,{})
+        expected=sum(p.stat().st_size for p in self.source.iterdir() if p!=ignored)
+        self.assertEqual(r['syslog_usage']['syslog_bytes'],expected)
+        self.assertEqual(r['syslog_budget_bytes'],32*1024**2)
+        self.assertEqual(before,self.fingerprint());self.assertFalse((self.root/'data/state').exists())
+    def test_incomplete_inventory_blocks_read_only_check(self):
+        from types import SimpleNamespace
+        for error in (TimeoutError('inventory timed out'),PermissionError('access denied')):
+            with self.subTest(error=error),patch.object(m,'syslog_inventory',side_effect=error),patch.object(m,'selected_config',return_value=self.c),patch.object(m,'payload',return_value={}):
+                with self.assertRaisesRegex(RuntimeError,'upgrade blocked'):
+                    m.install(SimpleNamespace(check=True,offline=False))
+        self.assertFalse((self.root/'data/state').exists())
+    def test_first_install_empty_data_dir_reports_zero(self):
+        self.c['data_dir']=str(self.root/'new-data')
+        self.current.unlink();self.state.unlink()
+        result=m.preflight(self.c,{})
+        self.assertEqual(result['syslog_usage']['syslog_bytes'],0)
+        self.assertFalse(Path(self.c['data_dir']).exists())
+
 class InstallationFlowTests(unittest.TestCase):
     def exercise(self,fail_verify=False):
         from types import SimpleNamespace
@@ -140,7 +212,7 @@ class InstallationFlowTests(unittest.TestCase):
                 failure=fail_verify and len(argv)>1 and argv[1]==str(ROOT/'verify.py')
                 return {'argv':argv,'returncode':1 if failure else 0,'stdout':'simulated verification failure' if failure else '{}','stderr':''}
             content='new' if fail_verify else 'old'
-            with patch.object(m,'STATE',statefile), patch.object(m,'selected_config',return_value=c), patch.object(m,'preflight',return_value=info), patch.object(m,'payload',return_value={str(target):(content,0o600)}), patch.object(m,'audit'), patch.object(m,'package_state',return_value={}), patch.object(m,'run',side_effect=fake_run), patch.object(m,'ALLOWED',{str(target),str(statefile)}):
+            with patch.object(m,'deployment_lock',side_effect=contextlib.nullcontext), patch.object(m,'STATE',statefile), patch.object(m,'selected_config',return_value=c), patch.object(m,'preflight',return_value=info), patch.object(m,'payload',return_value={str(target):(content,0o600)}), patch.object(m,'audit'), patch.object(m,'package_state',return_value={}), patch.object(m,'run',side_effect=fake_run), patch.object(m,'ALLOWED',{str(target),str(statefile)}):
                 if fail_verify:
                     with self.assertRaisesRegex(RuntimeError,'verification failed'):
                         m.install(SimpleNamespace(check=False,offline=True))
