@@ -2,7 +2,7 @@ name: Debian VM lifecycle
 on:
   workflow_dispatch:
   push:
-    branches: [feature/v1.2-syslog-reliability, fix/lxc-receiver-clock]
+    branches: [feature/v1.2-syslog-reliability, fix/lxc-receiver-clock, fix/v1.2.1-uninstall]
     paths:
       - 'tests/vm/**'
       - '.github/workflows/vm-lifecycle.yml'

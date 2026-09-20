@@ -112,7 +112,7 @@ def inject_failure(unit,label):
     dropin=directory/'90-vm-failure.conf'
     sentinel=DATA/'state'/('vm-fail-'+label);sentinel.write_text('armed')
     helper=ROOT/'fail-once.py'
-    helper.write_text("import pathlib,sys\np=pathlib.Path(sys.argv[1])\nif p.exists() and pathlib.Path('/opt/netblackbox/VERSION').read_text().strip()=='1.2.0':\n p.unlink();sys.exit(41)\n")
+    helper.write_text("import pathlib,sys\np=pathlib.Path(sys.argv[1])\nif p.exists() and pathlib.Path('/opt/netblackbox/VERSION').read_text().strip().startswith('1.2.'):\n p.unlink();sys.exit(41)\n")
     dropin.write_text('[Service]\nExecStartPre=/usr/bin/python3 '+str(helper)+' '+str(sentinel)+'\n')
     run(['systemctl','daemon-reload'])
     try:
@@ -136,7 +136,7 @@ def upgrade():
         inject_failure(unit,label)
     command_log('v12-preflight',['python3',str(ROOT/'candidate/manage.py'),'install','--check'])
     command_log('v12-upgrade',['python3',str(ROOT/'candidate/manage.py'),'install','--offline'])
-    assert Path('/opt/netblackbox/VERSION').read_text().strip()=='1.2.0'
+    assert Path('/opt/netblackbox/VERSION').read_text().strip()==(ROOT/'candidate/VERSION').read_text().strip()
     command_log('v12-verify',['python3',str(ROOT/'candidate/verify.py')])
     pid_before=run(['systemctl','show','netblackbox.service','--property=MainPID','--value']).stdout.strip()
     command_log('v12-idempotent',['python3',str(ROOT/'candidate/manage.py'),'install','--offline'])
@@ -156,11 +156,35 @@ def after_reboot():
     with sqlite3.connect(DATA/'db/netblackbox.sqlite3') as db:assert db.execute('SELECT count(*) FROM metrics').fetchone()[0]>=prior['metrics_before_reboot']
     json_write(REPORTS/'reboot.json',{'result':'PASS','boot_changed':True,'units':enabled_active(),'health':health(),'evidence':verify_evidence(),
                                   'syslog':syslog_health(),'guard':json.loads((DATA/'state/syslog-storage.json').read_text())})
-    json_write(REPORTS/'result.json',{'result':'PASS','real_systemd_pid1':True,'real_vm_reboot':True,'baseline':'1.1.0','candidate':'1.2.0',
+    json_write(REPORTS/'result.json',{'result':'PASS','real_systemd_pid1':True,'real_vm_reboot':True,'baseline':'1.1.0','candidate':(ROOT/'candidate/VERSION').read_text().strip(),
                                    'rollback_failures_tested':['receiver','agent','guard'],'idempotent_reinstall':True,'existing_evidence_preserved':True})
 
+
+def uninstall():
+    assert_fixture()
+    original=json.loads(Path('/etc/netblackbox/install-state.json').read_text())
+    # Reproduce old-checkout rejection without --yes: no destructive action allowed in this step.
+    old=command_log('old-checkout-uninstall',['python3',str(ROOT/'v11/manage.py'),'uninstall'],expect=1)
+    assert 'Unknown managed path' in old.stdout+old.stderr
+    assert Path('/etc/netblackbox/install-state.json').exists()
+    # No candidate checkout remains. Uninstall exclusively with the installed matching manager.
+    assert Path('/opt/netblackbox/manage.py').is_file()
+    shutil.move(ROOT/'candidate',ROOT/'candidate-not-used')
+    command_log('installed-manager-uninstall',['python3','/opt/netblackbox/manage.py','uninstall','--yes'])
+    assert not Path('/etc/netblackbox/install-state.json').exists()
+    for path in original['files']:assert not Path(path).exists(),path
+    for unit in UNITS:
+        assert run(['systemctl','is-active',unit],check=False).stdout.strip()!='active'
+        assert run(['systemctl','is-enabled',unit],check=False).stdout.strip()!='enabled'
+    state=json.loads(latest_manifest().read_text());assert state['phase']=='uninstalled'
+    assert verify_evidence()
+    prior=json.loads((REPORTS/'result.json').read_text())
+    prior.update(uninstall_without_checkout='PASS',old_checkout_failure_reproduced=True,uninstall_evidence_preserved=True)
+    json_write(REPORTS/'result.json',prior)
+    json_write(REPORTS/'uninstall.json',{'result':'PASS','managed_files_removed':len(original['files']),'evidence':True,'matching_manager_only':True})
+
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('phase',choices=['baseline','upgrade','after-reboot']);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('phase',choices=['baseline','upgrade','after-reboot','uninstall']);a=p.parse_args()
     try:globals()[a.phase.replace('-','_')]()
     finally:
         if LOGS.is_dir():

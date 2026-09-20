@@ -36,6 +36,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_timezones.py' -v
           python3 -m unittest discover -s tests -p 'test_guard_recovery.py' -v
           python3 -m unittest discover -s tests -p 'test_upgrade.py' -v
+          python3 -m unittest discover -s tests -p 'test_uninstall.py' -v
           sh -n install.sh
           sh -n uninstall.sh
       - name: Real rsyslog integration (isolated container)
