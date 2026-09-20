@@ -40,11 +40,20 @@ def process_identity(pid):
     try:
         text=Path(f'/proc/{pid}/stat').read_text()
         ticks=int(text[text.rindex(')')+2:].split()[19])
-        hz=os.sysconf('SC_CLK_TCK')
-        uptime=float(Path('/proc/uptime').read_text().split()[0])
         boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-        return f'{boot}:{pid}:{ticks}',time.time()-uptime+ticks/hz
+        return f'{boot}:{pid}:{ticks}',None  # ticks identify the process; never mix them with virtualized /proc/uptime
     except (OSError,ValueError,IndexError):return None,None
+
+
+def systemd_started_at(value):
+    """Convert systemd's monotonic start time using the same clock namespace.
+    LXC may virtualize /proc/uptime independently of process start ticks.
+    """
+    try:started=int(value)/1_000_000
+    except (TypeError,ValueError):return None
+    mono=time.monotonic()
+    if started<=0 or started>mono:return None
+    return time.time()-(mono-started)
 
 
 def write_errors(text):
@@ -75,17 +84,18 @@ def listener_state(c,pid,text,available=True):
 
 
 def system_state(c,command):
-    r=command(['systemctl','show','netblackbox-syslog.service','--property=ActiveState,MainPID'],3,8192)
+    r=command(['systemctl','show','netblackbox-syslog.service','--property=ActiveState,MainPID,ExecMainStartTimestampMonotonic'],3,8192)
     props=dict(line.split('=',1) for line in r['stdout'].splitlines() if '=' in line)
     active=props.get('ActiveState')=='active' if r['returncode']==0 else None
     pid=int(props.get('MainPID','0') or '0')
-    ident,started=process_identity(pid)
+    ident,_=process_identity(pid)
+    started=systemd_started_at(props.get('ExecMainStartTimestampMonotonic'))
     ss=command(['ss','-H','-lnptu'],3,65536)
     udp,tcp=listener_state(c,pid,ss['stdout'],ss['returncode']==0 and not ss.get('timeout') and not ss.get('stdout_truncated'))
     journal=command(['journalctl','-u','netblackbox-syslog.service',f'_PID={pid}','--since','2 minutes ago','-n','100','--no-pager','-o','json'],3,65536)
     errors=write_errors(journal['stdout']) if journal['returncode']==0 else None
     return {'write_error_messages':errors,'service_active':active,'process_id':pid,'process_identity':ident,
-            'process_started_at':started,'udp_listening':udp,'tcp_listening':tcp}
+            'process_started_at':started,'process_start_source':'systemd-monotonic' if started is not None else 'unknown','udp_listening':udp,'tcp_listening':tcp}
 
 
 def recent_file_time(root,ip,now):

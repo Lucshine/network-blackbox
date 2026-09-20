@@ -61,6 +61,15 @@ def health():
     return d
 
 
+def syslog_health():
+    deadline=time.monotonic()+70
+    while time.monotonic()<deadline:
+        with urllib.request.urlopen('http://127.0.0.1:9911/syslog',timeout=5) as r:state=json.load(r)
+        if state['receiver']['state']=='HEALTHY':return state
+        time.sleep(1)
+    raise RuntimeError('Receiver observability failed: '+json.dumps(state))
+
+
 def latest_manifest():
     folders=list((DATA/'state/installations').glob('*/manifest.json'))
     return max(folders,key=lambda p:p.parent.name)
@@ -134,7 +143,7 @@ def upgrade():
     assert run(['systemctl','show','netblackbox.service','--property=MainPID','--value']).stdout.strip()==pid_before
     boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     with sqlite3.connect(DATA/'db/netblackbox.sqlite3') as db:count=db.execute('SELECT count(*) FROM metrics').fetchone()[0]
-    json_write(REPORTS/'upgrade.json',{'result':'PASS','units':enabled_active(),'health':health(),'evidence':verify_evidence(),'boot_before':boot,'metrics_before_reboot':count})
+    json_write(REPORTS/'upgrade.json',{'result':'PASS','units':enabled_active(),'health':health(),'evidence':verify_evidence(),'syslog':syslog_health(),'boot_before':boot,'metrics_before_reboot':count})
     run(['sync'])
 
 
@@ -146,7 +155,7 @@ def after_reboot():
     run(['systemctl','start','netblackbox-logrotate.service'])
     with sqlite3.connect(DATA/'db/netblackbox.sqlite3') as db:assert db.execute('SELECT count(*) FROM metrics').fetchone()[0]>=prior['metrics_before_reboot']
     json_write(REPORTS/'reboot.json',{'result':'PASS','boot_changed':True,'units':enabled_active(),'health':health(),'evidence':verify_evidence(),
-                                  'guard':json.loads((DATA/'state/syslog-storage.json').read_text())})
+                                  'syslog':syslog_health(),'guard':json.loads((DATA/'state/syslog-storage.json').read_text())})
     json_write(REPORTS/'result.json',{'result':'PASS','real_systemd_pid1':True,'real_vm_reboot':True,'baseline':'1.1.0','candidate':'1.2.0',
                                    'rollback_failures_tested':['receiver','agent','guard'],'idempotent_reinstall':True,'existing_evidence_preserved':True})
 

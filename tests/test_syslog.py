@@ -14,7 +14,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'app'));sys.path.insert(0,str(ROOT/'scripts'))
 from config_tools import apply_defaults,validate,render
 import syslog_storage as storage
-from syslog_status import SyslogObserver,system_state,listener_state
+from syslog_status import SyslogObserver,system_state,listener_state,process_identity,systemd_started_at
 from verify_remote_syslog import check,new_id
 BASE=json.loads((ROOT/'config.example.json').read_text())
 NOW=dt.datetime(2026,8,31,tzinfo=dt.timezone.utc).timestamp()
@@ -166,6 +166,25 @@ class ObserverTests(unittest.TestCase):
         result=self.observer.sample(dict(self.receiver,udp_listening=udp,tcp_listening=tcp),NOW,self.stats())
         self.assertEqual(result['receiver']['state'],'UNKNOWN')
         self.assertEqual(listener_state(self.c,0,''),(None,None))
+    def test_lxc_virtual_uptime_does_not_reject_fresh_stats(self):
+        def proc_read(path,*args,**kwargs):
+            if str(path).endswith('/stat'):return '42 (rsyslogd) '+' '.join(['S']+['0']*18+['900000'])
+            if str(path).endswith('/boot_id'):return 'fixture-boot'
+            raise AssertionError('Must not read virtualized uptime: '+str(path))
+        with patch('syslog_status.Path.read_text',autospec=True,side_effect=proc_read):
+            ident,started=process_identity(42)
+        self.assertEqual(ident,'fixture-boot:42:900000');self.assertIsNone(started)
+        with patch('syslog_status.time.monotonic',return_value=1000),patch('syslog_status.time.time',return_value=NOW):
+            started=systemd_started_at('900000000')
+            self.assertEqual(started,NOW-100)
+            self.assertIsNone(systemd_started_at('1001000000'))
+            self.assertIsNone(systemd_started_at(None))
+        statsfile=self.root/'state/rsyslog/stats.log';statsfile.parent.mkdir(parents=True)
+        statsfile.write_text(json.dumps({'name':'netblackbox_write','failed':0,'processed':1})+'\n')
+        os.utime(statsfile,(NOW-1,NOW-1))
+        result=self.observer.sample(dict(self.receiver,process_started_at=started),NOW)
+        self.assertTrue(result['receiver']['stats_available'])
+        self.assertEqual(result['receiver']['state'],'HEALTHY')
     def test_restart_retains_last_seen_and_resets_counter_scope(self):
         self.observer.sample(self.receiver,NOW-1,self.stats(0))
         self.observer.sample(self.receiver,NOW,self.stats(99))
