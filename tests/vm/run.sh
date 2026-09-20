@@ -9,6 +9,7 @@ QEMU_PID=
 cleanup() {
   if test -n "$QEMU_PID"; then kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true; fi
   cp "$VM_DIR/serial.log" "$RESULT_DIR/serial.log" 2>/dev/null || true
+  if test -n "${SUDO_UID:-}"; then chown -R "$SUDO_UID:${SUDO_GID}" "$RESULT_DIR"; fi
   rm -rf "$VM_DIR"
 }
 trap cleanup EXIT
@@ -79,6 +80,7 @@ ready
 "${SSH[@]}" 'sudo cloud-init status --wait' | tee "$RESULT_DIR/cloud-init.txt"
 git -C "$REPO" archive --format=tar f582002b547aace89c34911667bb893866efa090 > baseline.tar
 git -C "$REPO" archive --format=tar HEAD > candidate.tar
+git -C "$REPO" rev-parse HEAD > "$RESULT_DIR/candidate-sha.txt"
 "${SCP[@]}" baseline.tar candidate.tar vmtester@127.0.0.1:/opt/vm-lifecycle/
 "${SSH[@]}" 'cd /opt/vm-lifecycle; mkdir v11 candidate; tar -xf baseline.tar -C v11; tar -xf candidate.tar -C candidate'
 collect() {

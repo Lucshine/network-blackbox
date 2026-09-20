@@ -106,8 +106,8 @@ flowchart TD
     E --> F[替换程序/配置/unit 并 daemon-reload]
     F --> G[新 guard 仅验证模式运行]
     G --> H[复检容量 → 启动 receiver → 启动 agent]
-    H --> I[Level 1 验收 + 再次容量检查]
-    I --> J[启动 timer → 标记完成 → 移除升级标记]
+    H --> I[启动 timer，升级标记仍禁止清理]
+    I --> J[Level 1 验收 + 再次容量检查 → 标记完成 → 移除升级标记]
     D -.失败.-> R[停止全部项目服务 → 校验并恢复备份 → 恢复原 enabled/active]
     E -.失败.-> R
     F -.失败.-> R
@@ -119,7 +119,7 @@ flowchart TD
 
 D 到 H 的 receiver 启动是收件中断阶段。旧 reader/writer/guard 全部停止且状态确认后才替换文件，避免正常升级路径中混用版本。容量在最初预检、收件排空后、启动前、验收后重查；解决了旧 receiver 持续收件造成的主要 TOCTOU 窗口，但无法阻止其他程序并发占用共享盘，运行期阈值也不是硬配额。
 
-新 guard 在升级标记存在且安装器进程仍活着时，仅做容量/标记校验，不轮转、不删过期归档、不自动 stop/start receiver。Agent 在升级标记存在时也只报告容量，不执行旧 metrics/events/incident 清理。这样后续失败回滚不会先丢掉旧证据。timer 在最终验收后启动，升级完成移除标记才恢复正常清理。
+新 guard 在升级标记存在且安装器进程仍活着时，仅做容量/标记校验，不轮转、不删过期归档、不自动 stop/start receiver。Agent 在升级标记存在时也只报告容量，不执行旧 metrics/events/incident 清理。这样后续失败回滚不会先丢掉旧证据。timer 在 receiver/Agent 启动后、Level 1 验收前启动，使验收能检查真实 active 状态；此时升级标记仍禁止清理。升级完成移除标记才恢复正常维护。
 
 ## 4. 升级后验收
 

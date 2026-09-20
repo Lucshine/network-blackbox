@@ -101,7 +101,7 @@ def baseline():
 def inject_failure(unit,label):
     directory=Path('/run/systemd/system')/(unit+'.d');directory.mkdir(parents=True,exist_ok=True)
     dropin=directory/'90-vm-failure.conf'
-    sentinel=ROOT/('fail-'+label);sentinel.write_text('armed')
+    sentinel=DATA/'state'/('vm-fail-'+label);sentinel.write_text('armed')
     helper=ROOT/'fail-once.py'
     helper.write_text("import pathlib,sys\np=pathlib.Path(sys.argv[1])\nif p.exists() and pathlib.Path('/opt/netblackbox/VERSION').read_text().strip()=='1.2.0':\n p.unlink();sys.exit(41)\n")
     dropin.write_text('[Service]\nExecStartPre=/usr/bin/python3 '+str(helper)+' '+str(sentinel)+'\n')

@@ -44,6 +44,8 @@ class UpgradeTests(unittest.TestCase):
                 if argv[:2]==['systemctl','stop']:states[argv[2]]['active']=False
                 if argv[:2]==['systemctl','show']:
                     return {'returncode':0,'stdout':'active' if states[argv[2]]['active'] else 'inactive','stderr':''}
+                if len(argv)>1 and argv[1]==str(ROOT/'verify.py'):
+                    self.assertTrue(states['netblackbox-logrotate.timer']['active'],'Level 1 requires timer active before verification')
                 fail=False
                 if not triggered:
                     fail=(failure=='after_write' and argv[:2]==['systemctl','daemon-reload'] and config.read_text()=='new configuration')

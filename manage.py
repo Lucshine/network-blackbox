@@ -493,6 +493,11 @@ def _install(args):
         else:
             for unit in ('netblackbox-syslog.service','netblackbox.service','netblackbox-logrotate.timer'):
                 if not info['services_before'][unit]['active']:run(['systemctl','start',unit],timeout=100)
+        if changing:
+            # Level 1 verifies the timer is active. Start it while the transaction marker
+            # still puts both guard and Agent retention in validation-only mode.
+            tx.phase('starting_timer')
+            run(['systemctl','start','netblackbox-logrotate.timer'],timeout=100)
         result=run(['/usr/local/bin/netblackbox','health'],timeout=10)
         write_json(folder/'health.json',result)
         verify=run([sys.executable,str(ROOT/'verify.py')],timeout=60,check=False)
@@ -500,9 +505,6 @@ def _install(args):
         if verify['returncode']:raise RuntimeError('Local service verification failed: '+verify['stdout']+verify['stderr'])
         if changing:
             write_json(folder/'capacity-after-verification.json',capacity_check(c))
-            # Start timer while marker still suppresses side effects; failure is rollback-safe.
-            tx.phase('starting_timer')
-            run(['systemctl','start','netblackbox-logrotate.timer'],timeout=100)
         tx.phase('complete')
         if changing:marker.unlink(missing_ok=True)
         print(f'Installed. Backup/audit: {folder}\nNext: netblackbox status; netblackbox test\nConfigure router manually: {c["syslog"]["listen_address"]}:{c["syslog"]["port"]}/UDP')

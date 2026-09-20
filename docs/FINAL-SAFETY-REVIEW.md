@@ -42,7 +42,7 @@
 
 详见 [可执行 SOP](UPGRADE-v1.2.md)，包含 commit/版本/预算检查、独立存储备份与校验、服务顺序图、UDP 中断窗口、逐阶段回滚和恢复命令。
 
-新流程：预检 → 暂存语法校验 → 完整备份与事务标记 → 停全部项目服务 → 复检容量 → 写程序/配置/unit → daemon-reload → 新 guard 仅校验 → 再查容量 → receiver → Agent → 验收与容量复检 → timer → 完成。
+新流程：预检 → 暂存语法校验 → 完整备份与事务标记 → 停全部项目服务 → 复检容量 → 写程序/配置/unit → daemon-reload → 新 guard 仅校验 → 再查容量 → receiver → Agent → timer（仍禁止清理）→ 验收与容量复检 → 完成。
 
 发生错误恢复旧程序、配置、unit、active/enabled；不回退/删除已有 SQLite/syslog/incident，也不改 Docker/网络。已经执行的 APT 包动作不自动降级。
 
