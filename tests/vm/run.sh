@@ -101,4 +101,6 @@ for ((i=0;i<30;i++)); do
 done
 if ! "${SSH[@]}" 'sudo python3 /opt/vm-lifecycle/candidate/tests/vm/guest.py after-reboot'; then collect; exit 1; fi
 collect
+if ! "${SSH[@]}" 'sudo python3 /opt/vm-lifecycle/candidate/tests/vm/guest.py uninstall'; then collect; exit 1; fi
+collect
 printf 'Real Debian VM lifecycle test: PASS\n'

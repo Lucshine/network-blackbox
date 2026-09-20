@@ -26,7 +26,7 @@ import uuid
 from syslog_status import SyslogObserver, system_state, human
 from syslog_storage import load as load_json
 
-VERSION = '1.2.0'
+VERSION = '1.2.1'
 LOG = logging.getLogger('netblackbox')
 FIELDS = {'gateway': 'GATEWAY', 'internet': 'INTERNET', 'router_dns': 'ROUTER_DNS', 'public_dns': 'PUBLIC_DNS', 'https': 'HTTPS'}
 

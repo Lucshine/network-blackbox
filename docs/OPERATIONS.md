@@ -76,10 +76,18 @@ sudo python3 manage.py rollback /srv/netblackbox/state/installations/时间戳_I
 ## 卸载（默认永久保留数据）
 
 ```bash
+# v1.2.1+ 的推荐入口；无需源码 checkout，也不会下载任何项目。
+sudo python3 /opt/netblackbox/manage.py uninstall --yes
+
+# 当前版本 wrapper 会优先调用已安装的对应管理器。
 sudo ./uninstall.sh --yes
 ```
 
 只移除本安装器管理的文件、停用项目三个服务和 timer；保留数据、安装审计、软件包和现有系统 rsyslog，不改防火墙。若已手工修改文件，会拒绝移除，审阅后可用 `--yes --force`；即使 --force，也先备份这些文件。不提供自动清空数据的选项。只有确认完整归档、不再需要取证时才由管理员自行删除数据目录。
+
+如果旧源码目录的 VERSION 为 v1.1，而已安装版本为 v1.2，旧管理器可能报 `Unknown managed path: /opt/netblackbox/syslog_storage.py`。这是旧文件白名单拒绝新版路径，尚未删除程序。不要通过放开任意路径校验来绕过。v1.2.1 起安装器会保存对应管理器到 `/opt/netblackbox/manage.py`；早于此版本且没有该文件的安装，应使用原升级时保留的匹配 `manage.py uninstall --yes`，或仅取得匹配管理工具后卸载，不需要先安装或拉取完整新项目。原先 v1.1 的 wrapper 本身不会自动获得新代码。
+
+卸载会先备份全部受管理文件，按 timer→guard→receiver→Agent 顺序停止并确认，再移除文件。停止失败不会在仍运行的进程下删除程序；删除后失败会尝试恢复文件和服务状态。证据、卸载备份、原源码目录和通用 apt 包保留；不会 git pull、clone 或重新安装程序。
 
 若启用了 journald drop-in，卸载移除该 drop-in 并重启 journald，恢复其他原有配置策略，不删除 journal。安装器拒绝覆盖任何非本项目拥有的同名配置，避免卸载误删其他人的文件。
 

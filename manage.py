@@ -37,7 +37,7 @@ PACKAGES=['rsyslog','curl','jq','bind9-dnsutils','iproute2','iputils-ping','etht
 APP_FILES=['netblackbox.py','config_tools.py','simulate_failure.py','syslog_storage.py','syslog_status.py','log_time.py']
 DOC_FILES=['LICENSE','README.md','docs/CONFIGURATION.md','docs/OPERATIONS.md','docs/PVE.md','docs/IMMORTALWRT.md','docs/SYSLOG-DESIGN.md','docs/SYSLOG-ACCEPTANCE.md','docs/UPGRADE-v1.2.md','docs/PVE-ROADMAP.md','docs/V1.2-REPORT.md','docs/PR1-REVIEW-FIXES.md','docs/FINAL-SAFETY-REVIEW.md','VERSION']
 ALLOWED={'/etc/netblackbox/config.json','/etc/netblackbox/rsyslog.conf','/etc/netblackbox/logrotate.conf',str(STATE),
-         '/etc/systemd/journald.conf.d/60-netblackbox.conf','/usr/local/bin/netblackbox'} | {'/etc/systemd/system/'+u for u in UNITS} | {'/opt/netblackbox/'+f for f in APP_FILES+DOC_FILES}
+         '/etc/systemd/journald.conf.d/60-netblackbox.conf','/usr/local/bin/netblackbox','/opt/netblackbox/manage.py'} | {'/etc/systemd/system/'+u for u in UNITS} | {'/opt/netblackbox/'+f for f in APP_FILES+DOC_FILES}
 
 
 def run(argv,timeout=20,check=True):
@@ -254,6 +254,7 @@ def port_free(address,port,kind,unit,old_config,c):
 
 def payload(c):
     files=render(c,ROOT/'app')
+    files['/opt/netblackbox/manage.py']=((ROOT/'manage.py').read_text(),0o755)
     for name in APP_FILES:files['/opt/netblackbox/'+name]=((ROOT/'app'/name).read_text(),0o755 if name.endswith('.py') else 0o644)
     for name in DOC_FILES:files['/opt/netblackbox/'+name]=((ROOT/name).read_text(),0o644)
     return files
@@ -474,7 +475,7 @@ def _install(args):
         if old:
             for path in old['files']:
                 if path not in files:tx.remove(path);changed.append(path)
-        state={'manager':'netblackbox-portable','version':'1.2.0','data_dir':str(root),'latest_install':str(folder),
+        state={'manager':'netblackbox-portable','version':'1.2.1','data_dir':str(root),'latest_install':str(folder),
                'files':{p:digest(text.encode()) for p,(text,_) in files.items()}}
         tx.put(str(STATE),json.dumps(state,indent=2)+'\n',0o600)
         tx.manifest['phase']='installed';tx.persist()
@@ -541,31 +542,51 @@ def install(args):
 
 def uninstall(args):
     environment()
-    if not STATE.exists():raise RuntimeError('No portable installation found; nothing removed')
+    if not STATE.exists():
+        print('No portable installation manifest found; no files removed.')
+        return
     state=json.loads(STATE.read_text())
     if state.get('manager')!='netblackbox-portable':raise RuntimeError('Unknown installation owner')
-    for name in state['files']:
-        if name not in ALLOWED:raise RuntimeError('Unknown managed path: '+name)
+    files=state.get('files')
+    if not isinstance(files,dict) or not files:raise RuntimeError('Invalid managed file manifest')
+    root=Path(state['data_dir'])
+    if not re.fullmatch(r'/(srv|var/lib)/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*',str(root)):
+        raise RuntimeError('Invalid evidence data directory')
+    ensure_safe_path(root)
+    for name,sha in files.items():
+        if name not in ALLOWED:
+            raise RuntimeError('Unknown managed path: '+name+'. This checkout may be older than the installed version. '
+                               'Use /opt/netblackbox/manage.py uninstall --yes (v1.2.1+), or a matching release manager; '
+                               'do not remove the path allowlist.')
         ensure_safe_path(name)
-    modified=[p for p,h in state['files'].items() if Path(p).exists() and digest(Path(p).read_bytes())!=h]
+        if not isinstance(sha,str) or not re.fullmatch('[0-9a-f]{64}',sha):raise RuntimeError('Invalid managed file checksum: '+name)
+    modified=[p for p,h in files.items() if Path(p).exists() and digest(Path(p).read_bytes())!=h]
     if modified and not args.force:
         raise RuntimeError('Locally edited files detected; back up/review, then use --force to remove: '+repr(modified))
     print('Remove only portable project files/services; keep all data, apt packages and system rsyslog.')
     if not args.yes:raise RuntimeError('Execute uninstall with --yes after reviewing the documentation')
-    folder=Path(state['data_dir'])/'state/installations'/('uninstall_'+time.strftime('%Y%m%dT%H%M%SZ',time.gmtime())+'_'+uuid.uuid4().hex[:6])
-    ensure_safe_path(folder)
-    folder.mkdir(parents=True)
+    folder=root/'state/installations'/('uninstall_'+time.strftime('%Y%m%dT%H%M%SZ',time.gmtime())+'_'+uuid.uuid4().hex[:6])
+    ensure_safe_path(folder);folder.mkdir(parents=True)
     tx=Transaction(folder,{'services_before':unit_state()})
-    for u in UNITS:
-        run(['systemctl','stop',u],timeout=100,check=False)
-        if u.endswith('.timer') or u in ('netblackbox.service','netblackbox-syslog.service'):
-            run(['systemctl','disable',u],check=False)
-    for p in [*state['files'],str(STATE)]:tx.remove(p)
-    run(['systemctl','daemon-reload'])
-    if '/etc/systemd/journald.conf.d/60-netblackbox.conf' in state['files']:
-        run(['systemctl','restart','systemd-journald'],timeout=30)
-    tx.manifest['phase']='uninstalled';tx.persist()
-    print('Uninstalled. Data and removal backup retained at '+state['data_dir'])
+    try:
+        # Back up every managed file before stopping or deleting anything, including this running manager.
+        for p in [*files,str(STATE)]:tx.remember(p)
+        tx.manifest['services_changed']=True;tx.phase('uninstalling')
+        stop_units()  # stop timer before receiver, and refuse deletion if any process will not stop
+        for unit in INSTALLABLE:
+            if (UNIT_DIR/unit).exists():run(['systemctl','disable',unit])
+        for p in [*files,str(STATE)]:tx.remove(p)
+        run(['systemctl','daemon-reload'])
+        if '/etc/systemd/journald.conf.d/60-netblackbox.conf' in files:
+            run(['systemctl','restart','systemd-journald'],timeout=30)
+        tx.phase('uninstalled')
+    except BaseException:
+        errors=restore_manifest(tx.manifest)
+        tx.manifest['rollback_errors']=errors
+        tx.phase('rollback_failed' if errors else 'rolled_back')
+        if errors:print('Uninstall rollback needs attention: '+repr(errors),file=sys.stderr)
+        raise
+    print('Uninstalled. Data and removal backup retained at '+str(root))
 
 
 def load_pending_manifest(manifest):

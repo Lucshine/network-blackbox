@@ -95,6 +95,10 @@ sudo ./install.sh --config edited-site.json --replace-config
 ## 卸载
 
 ```bash
+# v1.2.1 起，使用随安装保存的匹配管理器，无需原源码目录。
+sudo python3 /opt/netblackbox/manage.py uninstall --yes
+
+# 也可在当前版本源码目录运行：
 sudo ./uninstall.sh --yes
 ```
 
@@ -126,6 +130,10 @@ sudo ./uninstall.sh --yes
 - [验收、防火墙、备份、回滚和卸载](docs/OPERATIONS.md)
 - [PVE 只读采集路线图](docs/PVE-ROADMAP.md)
 - [开发与测试](CONTRIBUTING.md)
+
+## Release
+
+当前版本 **v1.2.1**。部署包与 SHA256 校验文件见 [GitHub Releases](https://github.com/Lucshine/network-blackbox/releases)。
 
 ## License
 
